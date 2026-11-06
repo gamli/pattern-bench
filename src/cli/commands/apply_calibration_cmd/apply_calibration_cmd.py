@@ -41,12 +41,12 @@ def _run(args: ApplyCalibrationArgs) -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for scan_file in scan_images.scan_files:
-        output_image_file = args.output_dir / f"corrected_{scan_file.name}"
+        output_image_file = args.output_dir / f"corrected_{scan_file.stem}.jpg"
         output_image_file.unlink(missing_ok=True)
 
     scanner_calibration = ScannerCalibration()
     corrected_scan_images = apply_scanner_calibration(scan_images, scanner_calibration)
 
     for scan_file, corrected_image, corrected_image_dpi in corrected_scan_images.files_and_images_and_dpi:
-        output_image_file = args.output_dir / f"corrected_{scan_file.name}"
+        output_image_file = args.output_dir / f"corrected_{scan_file.stem}.jpg"
         save_output_image(corrected_image, corrected_image_dpi, output_image_file)

@@ -60,13 +60,13 @@ def _run(args: StitchScansArgs) -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_image_file = args.output_dir / "stitched_scans.png"
+    output_image_file = args.output_dir / "stitched_scans.jpg"
     output_image_file.unlink(missing_ok=True)
 
-    output_image_with_seams_file = args.output_dir / "stitched_scans_with_seams.png"
+    output_image_with_seams_file = args.output_dir / "stitched_scans_with_seams.jpg"
     output_image_with_seams_file.unlink(missing_ok=True)
 
-    output_image_with_seam_areas_file = args.output_dir / "stitched_scans_with_seam_areas.png"
+    output_image_with_seam_areas_file = args.output_dir / "stitched_scans_with_seam_areas.jpg"
     output_image_with_seam_areas_file.unlink(missing_ok=True)
 
     verbose_dir = args.output_dir / "verbose"

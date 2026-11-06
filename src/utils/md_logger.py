@@ -330,7 +330,7 @@ class MdLogger:
             opencv_image: NDArray[Any],
             /,
             *,
-            extension: str = ".png",
+            extension: str = ".jpg",
             params: Sequence[int] | None = None,
             link_attrs: Mapping[str, AttributeValue] | None = None,
             markdown: bool = False,
