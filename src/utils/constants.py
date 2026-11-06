@@ -1,1 +1,1 @@
-﻿APP_NAME = "sewing-pattern-scanner"
+﻿APP_NAME = "pattern-bench"
