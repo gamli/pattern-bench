@@ -2,11 +2,12 @@
 
 import cv2 as cv
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import OptimizeResult, least_squares
 
+from src.stitching._verbose_logging import _vlog_end_timer, _vlog_error, _vlog_start_timer
 from src.stitching.feature_matching import PairwiseMatch
 from src.stitching.shared import StitchingConfig, StitchingImages, FloatArray
-from utils.md_logger import MdLogger
+from src.utils.md_logger import MdLogger
 
 
 def estimate_global_affine(
@@ -28,42 +29,21 @@ def estimate_global_affine(
 
     vlog = config.vlog
 
-    if vlog:
-        vlog.h3("Global Rigid Estimation")
-        vlog.start_timer(f"Global Rigid Estimation (total)")
-        vlog.log_elapsed("Global Rigid Estimation starting at")
-        vlog.p(f"Registering `{stitching_images.count}` images jointly; image `0` is fixed to identity.")
-        vlog.table(
-            ("Parameter", "Value"),
-            (
-                ("irls_iterations", config.irls_iterations),
-                ("huber_delta (px)", config.huber_delta),
-                ("solver", "SciPy least_squares / Levenberg-Marquardt"),
-                ("initialization", "Pairwise Kabsch / spanning tree"),
-            ),
-        )
+    _vlog_estimation_start(vlog, stitching_images.count, config)
 
     try:
-        if vlog:
-            vlog.start_timer(f"check_connectivity(...)")
-        check_connectivity(pairwise_matches, stitching_images.count)
-        if vlog:
-            vlog.end_timer()
+        _vlog_start_timer(vlog, "check_connectivity(...)")
+        _check_connectivity(pairwise_matches, stitching_images.count)
+        _vlog_end_timer(vlog)
     except (ValueError, RuntimeError) as error:
-        if vlog:
-            vlog.err(str(error))
+        _vlog_error(vlog, error)
         raise
 
     if stitching_images.count == 1:
-        if vlog:
-            vlog.p("Only one image was provided; returning identity without least squares or IRLS.")
-            vlog.code(np.array2string(np.eye(3, dtype=np.float64), precision=8))
-            vlog.end_timer()
-            vlog.log_elapsed("Global Rigid Estimation finished at")
+        _vlog_single_image_estimation(vlog)
         return (np.eye(3, dtype=np.float64),)
 
-    if vlog:
-        vlog.start_timer(f"coefficient/target initialization")
+    _vlog_start_timer(vlog, "coefficient/target initialization")
 
     coefficient_blocks = []
     target_blocks = []
@@ -72,16 +52,10 @@ def estimate_global_affine(
             continue
         p, q = pair.keypoints_i, pair.keypoints_j
         if p.shape != q.shape or p.ndim != 2 or p.shape[1] != 2 or len(p) < 2:
-            if vlog:
-                vlog.err(f"Pair {pair.image_idx_i} / {pair.image_idx_j}: invalid matched point array shapes.")
-                vlog.end_timer()
-                vlog.log_elapsed("Global Rigid Estimation finished at")
+            _vlog_invalid_pair(vlog, pair, "invalid matched point array shapes")
             raise ValueError("Accepted pairs need point arrays with shape (N, 2), N >= 2.")
         if not np.isfinite(p).all() or not np.isfinite(q).all():
-            if vlog:
-                vlog.err(f"Pair {pair.image_idx_i} / {pair.image_idx_j}: matched coordinates must be finite.")
-                vlog.end_timer()
-                vlog.log_elapsed("Global Rigid Estimation finished at")
+            _vlog_invalid_pair(vlog, pair, "matched coordinates must be finite")
             raise ValueError("Matched coordinates must be finite.")
         coefficients = np.zeros((len(p), 3 * (stitching_images.count - 1)), dtype=np.float64)
         targets = np.zeros((len(p), 2), dtype=np.float64)
@@ -100,94 +74,82 @@ def estimate_global_affine(
     coefficients = np.vstack(coefficient_blocks)
     targets = np.vstack(target_blocks)
 
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.p(
-            f"The accepted match graph is connected. Using `{len(coefficient_blocks)}` accepted pairs "
-            f"and `{len(targets)}` point correspondences; `{len(pairwise_matches) - len(coefficient_blocks)}` pairs are rejected."
-        )
-        vlog.p(
-            f"The coordinate coefficient matrix has shape `{coefficients.shape}`. "
-            f"The rigid fit has `{coefficients.shape[1]}` free parameters "
-            f"and `{2 * len(targets)}` scalar residuals (angle, tx, ty per image except image 0)."
-        )
-        vlog.p(
-            "Every step reports residual distances in the reference image's pixel coordinates. "
-            "The unweighted sum of squared distances and the Huber cost use the same definitions in every step: "
-            "Huber cost is `0.5 * r**2` for `r <= huber_delta`, otherwise `huber_delta * (r - 0.5 * huber_delta)`. "
-            "IRLS point weights come from the preceding solution; residuals below are measured after each new solve."
-        )
+    _vlog_estimation_system(vlog, pairwise_matches, coefficient_blocks, coefficients, targets)
 
-    if vlog:
-        vlog.start_timer(f"Kabsch initialization")
+    _vlog_start_timer(vlog, "Kabsch initialization")
     solution = _initial_rigid_solution(pairwise_matches, stitching_images.count)
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.start_timer(f"Initial Levenberg-Marquardt")
+    _vlog_start_timer(vlog, "Initial Levenberg-Marquardt")
     solution, rank = _solve_rigid(coefficients, targets, solution, vlog=vlog)
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.p(f"The rigid-fit Jacobian has full column rank: `{rank}`.")
-        _log_estimation_step(
-            vlog, "Initial least squares", solution,
-            np.linalg.norm(coefficients @ solution - targets, axis=1),
-            pairwise_matches, stitching_images, config.huber_delta,
-        )
+    _vlog_estimation_step(
+        vlog, "Initial least squares", solution, coefficients, targets,
+        pairwise_matches, stitching_images, config.huber_delta, rank=rank,
+    )
 
     for iteration in range(config.irls_iterations):
 
-        if vlog:
-            vlog.start_timer(f"IRLS iteration {iteration + 1} / {config.irls_iterations}")
+        _vlog_start_timer(vlog, "IRLS iteration {} / {}", iteration + 1, config.irls_iterations)
 
-        if vlog:
-            vlog.start_timer(f"np.linalg.norm(...)")
+        _vlog_start_timer(vlog, "np.linalg.norm(...)")
         errors = np.linalg.norm(coefficients @ solution - targets, axis=1)
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
-        if vlog:
-            vlog.start_timer(f"np.sqrt(...)")
+        _vlog_start_timer(vlog, "np.sqrt(...)")
         # sqrt(weight) multiplies the least-squares rows, not weight itself.
         weights = np.sqrt(np.minimum(1.0, config.huber_delta / np.maximum(errors, 1e-12)))
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
-        if vlog:
-            vlog.start_timer(f"Weighted Levenberg-Marquardt")
+        _vlog_start_timer(vlog, "Weighted Levenberg-Marquardt")
         solution, _ = _solve_rigid(coefficients, targets, solution, weights, vlog)
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
-        if vlog:
-            _log_estimation_step(
-                vlog, f"IRLS iteration {iteration + 1} / {config.irls_iterations}", cast(FloatArray, solution),
-                np.linalg.norm(coefficients @ solution - targets, axis=1),
-                pairwise_matches, stitching_images, config.huber_delta, weights,
-            )
-            vlog.end_timer()
+        _vlog_estimation_step(
+            vlog, "IRLS iteration {} / {}", cast(FloatArray, solution), coefficients, targets,
+            pairwise_matches, stitching_images, config.huber_delta, weights,
+            title_args=(iteration + 1, config.irls_iterations),
+        )
+        _vlog_end_timer(vlog)
 
     transforms = [np.eye(3, dtype=np.float64)]
     for index in range(stitching_images.count - 1):
         transform = np.vstack((solution[3 * index:3 * index + 3].T, [0.0, 0.0, 1.0]))
         if not np.isfinite(transform).all() or abs(np.linalg.det(transform[:2, :2])) < 1e-12:
-            if vlog:
-                vlog.err(f"Degenerate global rigid transform for image {index + 1}.")
-            raise RuntimeError(f"Degenerate global rigid transform for image {index + 1}.")
+            message = f"Degenerate global rigid transform for image {index + 1}."
+            _vlog_error(vlog, message)
+            raise RuntimeError(message)
         transforms.append(transform)
 
-    if vlog:
-        vlog.h4("Global rigid estimation result")
-        vlog.p(f"Returning `{len(transforms)}` global transforms mapping each image to reference image `0`.")
-        vlog.end_timer()
-        vlog.log_elapsed("Global Rigid Estimation finished at")
+    _vlog_estimation_result(vlog, transforms)
 
     return tuple(transforms)
+
+
+def _check_connectivity(matches: Sequence[PairwiseMatch], image_count: int) -> None:
+    """Fail if any image cannot be linked to image 0 through accepted pairs."""
+    if image_count < 1:
+        raise ValueError("image_count must be positive.")
+    adjacency: list[list[int]] = [[] for _ in range(image_count)]
+    for pair in matches:
+        if not 0 <= pair.image_idx_i < pair.image_idx_j < image_count:
+            raise ValueError("Pair indices must satisfy 0 <= image_i < image_j < image_count.")
+        if pair.accepted:
+            adjacency[pair.image_idx_i].append(pair.image_idx_j)
+            adjacency[pair.image_idx_j].append(pair.image_idx_i)
+    reached = {0}
+    pending = [0]
+    while pending:
+        for neighbor in adjacency[pending.pop()]:
+            if neighbor not in reached:
+                reached.add(neighbor)
+                pending.append(neighbor)
+    missing = sorted(set(range(image_count)) - reached)
+    if missing:
+        raise RuntimeError(f"Disconnected match graph; unregistered image indices: {missing}.")
 
 
 def _initial_rigid_solution(matches: Sequence[PairwiseMatch], image_count: int) -> FloatArray:
@@ -268,41 +230,137 @@ def _solve_rigid(
         residuals, initial_parameters, jac=jacobian,
         method="lm", x_scale="jac", loss="linear",
     )
-    if vlog:
-        vlog.table(
-            ("Solver metric", "Value"),
-            (
-                ("Termination", result.message),
-                ("Function evaluations", result.nfev),
-                ("Jacobian evaluations", result.njev),
-                ("First-order optimality", f"{result.optimality:.6g}"),
-            ),
-        )
+    _vlog_solver_result(vlog, result)
     if not result.success or not np.isfinite(result.x).all() or not np.isfinite(result.fun).all():
         message = f"Rigid registration failed: {result.message}"
-        if vlog:
-            vlog.err(message)
+        _vlog_error(vlog, message)
         raise RuntimeError(message)
     rank = int(np.linalg.matrix_rank(result.jac))
     if rank != len(result.x):
         message = f"Rigid registration is underdetermined: rank {rank}, expected {len(result.x)}."
-        if vlog:
-            vlog.err(message)
+        _vlog_error(vlog, message)
         raise RuntimeError(message)
     return make_solution(result.x), rank
 
+#region vlog
 
-def _log_estimation_step(
-        vlog: MdLogger,
+def _vlog_estimation_start(vlog: MdLogger | None, image_count: int, config: StitchingConfig) -> None:
+    if not vlog:
+        return
+
+    vlog.h3("Global Rigid Estimation")
+    vlog.start_timer("Global Rigid Estimation (total)")
+    vlog.log_elapsed("Global Rigid Estimation starting at")
+    vlog.p(f"Registering `{image_count}` images jointly; image `0` is fixed to identity.")
+    vlog.table(
+        ("Parameter", "Value"),
+        (
+            ("irls_iterations", config.irls_iterations),
+            ("huber_delta (px)", config.huber_delta),
+            ("solver", "SciPy least_squares / Levenberg-Marquardt"),
+            ("initialization", "Pairwise Kabsch / spanning tree"),
+        ),
+    )
+
+
+def _vlog_single_image_estimation(vlog: MdLogger | None) -> None:
+    if not vlog:
+        return
+
+    vlog.p("Only one image was provided; returning identity without least squares or IRLS.")
+    vlog.code(np.array2string(np.eye(3, dtype=np.float64), precision=8))
+    _vlog_estimation_finish(vlog)
+
+
+def _vlog_invalid_pair(vlog: MdLogger | None, pair: PairwiseMatch, reason: str) -> None:
+    if not vlog:
+        return
+
+    vlog.err(f"Pair {pair.image_idx_i} / {pair.image_idx_j}: {reason}.")
+    _vlog_estimation_finish(vlog)
+
+
+def _vlog_estimation_system(
+        vlog: MdLogger | None,
+        pairwise_matches: Sequence[PairwiseMatch],
+        coefficient_blocks: Sequence[FloatArray],
+        coefficients: FloatArray,
+        targets: FloatArray,
+) -> None:
+    if not vlog:
+        return
+
+    vlog.p(
+        f"The accepted match graph is connected. Using `{len(coefficient_blocks)}` accepted pairs "
+        f"and `{len(targets)}` point correspondences; `{len(pairwise_matches) - len(coefficient_blocks)}` pairs are rejected."
+    )
+    vlog.p(
+        f"The coordinate coefficient matrix has shape `{coefficients.shape}`. "
+        f"The rigid fit has `{coefficients.shape[1]}` free parameters "
+        f"and `{2 * len(targets)}` scalar residuals (angle, tx, ty per image except image 0)."
+    )
+    vlog.p(
+        "Every step reports residual distances in the reference image's pixel coordinates. "
+        "The unweighted sum of squared distances and the Huber cost use the same definitions in every step: "
+        "Huber cost is `0.5 * r**2` for `r <= huber_delta`, otherwise `huber_delta * (r - 0.5 * huber_delta)`. "
+        "IRLS point weights come from the preceding solution; residuals below are measured after each new solve."
+    )
+
+
+def _vlog_estimation_result(vlog: MdLogger | None, transforms: Sequence[FloatArray]) -> None:
+    if not vlog:
+        return
+
+    vlog.h4("Global rigid estimation result")
+    vlog.p(f"Returning `{len(transforms)}` global transforms mapping each image to reference image `0`.")
+    _vlog_estimation_finish(vlog)
+
+
+def _vlog_estimation_finish(vlog: MdLogger | None) -> None:
+    if not vlog:
+        return
+
+    vlog.end_timer()
+    vlog.log_elapsed("Global Rigid Estimation finished at")
+
+
+def _vlog_solver_result(vlog: MdLogger | None, result: OptimizeResult) -> None:
+    if not vlog:
+        return
+
+    vlog.table(
+        ("Solver metric", "Value"),
+        (
+            ("Termination", result.message),
+            ("Function evaluations", result.nfev),
+            ("Jacobian evaluations", result.njev),
+            ("First-order optimality", f"{result.optimality:.6g}"),
+        ),
+    )
+
+
+def _vlog_estimation_step(
+        vlog: MdLogger | None,
         title: str,
         solution: FloatArray,
-        errors: FloatArray,
+        coefficients: FloatArray,
+        targets: FloatArray,
         matches: Sequence[PairwiseMatch],
         stitching_images: StitchingImages,
         huber_delta: float,
         row_weights: FloatArray | None = None,
+        *,
+        rank: int | None = None,
+        title_args: tuple[object, ...] = (),
 ) -> None:
     """Report the new solution and the optional row weights used for this solve."""
+    if not vlog:
+        return
+
+    title = title.format(*title_args) if title_args else title
+    errors = np.linalg.norm(coefficients @ solution - targets, axis=1)
+    if rank is not None:
+        vlog.p(f"The rigid-fit Jacobian has full column rank: `{rank}`.")
 
     vlog.start_timer(f"_log_estimation_step(...)")
 
@@ -354,21 +412,24 @@ def _log_estimation_step(
         transforms.append(transform)
 
     try:
-        _log_alignment(vlog, title, stitching_images, transforms, matches)
+        _vlog_alignment(vlog, title, stitching_images, transforms, matches)
     except (cv.error, MemoryError) as error:
         vlog.err(f"Could not render the full-resolution alignment: {error}")
 
     vlog.end_timer()
 
 
-def _log_alignment(
-        vlog: MdLogger,
+def _vlog_alignment(
+        vlog: MdLogger | None,
         title: str,
         stitching_images: StitchingImages,
         transforms: Sequence[FloatArray],
         matches: Sequence[PairwiseMatch],
 ) -> None:
     """Overlay original scans using global rigid transforms and one shared canvas offset."""
+    if not vlog:
+        return
+
     corners = []
     with np.errstate(over="ignore", invalid="ignore"):
         for image, transform in zip(stitching_images.scan_images, transforms):
@@ -436,25 +497,4 @@ def _log_alignment(
         overlay, link_only=True, alt=f"{title}: residual connection lines", style="max-height: 500px;",
     )
 
-
-def check_connectivity(matches: Sequence[PairwiseMatch], image_count: int) -> None:
-    """Fail if any image cannot be linked to image 0 through accepted pairs."""
-    if image_count < 1:
-        raise ValueError("image_count must be positive.")
-    adjacency: list[list[int]] = [[] for _ in range(image_count)]
-    for pair in matches:
-        if not 0 <= pair.image_idx_i < pair.image_idx_j < image_count:
-            raise ValueError("Pair indices must satisfy 0 <= image_i < image_j < image_count.")
-        if pair.accepted:
-            adjacency[pair.image_idx_i].append(pair.image_idx_j)
-            adjacency[pair.image_idx_j].append(pair.image_idx_i)
-    reached = {0}
-    pending = [0]
-    while pending:
-        for neighbor in adjacency[pending.pop()]:
-            if neighbor not in reached:
-                reached.add(neighbor)
-                pending.append(neighbor)
-    missing = sorted(set(range(image_count)) - reached)
-    if missing:
-        raise RuntimeError(f"Disconnected match graph; unregistered image indices: {missing}.")
+#endregion

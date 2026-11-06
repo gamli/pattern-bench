@@ -1,6 +1,11 @@
-﻿import cv2 as cv
+﻿from pathlib import Path
+from typing import Sequence
 
-from src.stitching.shared import StitchingConfig, StitchingImages
+import cv2 as cv
+
+from src.stitching._verbose_logging import _vlog_end_timer, _vlog_start_timer
+from src.stitching.shared import ImageArray, StitchingConfig, StitchingImages
+from src.utils.md_logger import MdLogger
 
 
 def detect_features(
@@ -15,71 +20,97 @@ def detect_features(
 
     vlog = config.vlog
 
-    if vlog:
-        vlog.h3("Feature Detection")
-        vlog.start_timer(f"Feature Detection (total)")
-        vlog.log_elapsed("Feature Detection starting at")
-        vlog.p(f"Detecting features on `{stitching_images.count}` images using SIFT")
+    _vlog_feature_detection_start(vlog, stitching_images.count)
 
-    if vlog:
-        vlog.start_timer(f"cv.SIFT.create(...)")
+    _vlog_start_timer(vlog, "cv.SIFT.create(...)")
     finder = cv.SIFT.create()
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
     features = []
 
     for image_idx, [file, image] in enumerate(stitching_images.files_and_images):
 
-        if vlog:
-            vlog.p(f"Detecting features on image `{file.name}`")
+        _vlog_image_detection_start(vlog, file)
 
-        if vlog:
-            vlog.start_timer(f"config.apply_fixed_seed(...)")
+        _vlog_start_timer(vlog, "config.apply_fixed_seed(...)")
         config.apply_fixed_seed()
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
-        if vlog:
-            vlog.start_timer(f"image_features = cv.detail.computeImageFeatures2(...)")
+        _vlog_start_timer(vlog, "image_features = cv.detail.computeImageFeatures2(...)")
         image_features = cv.detail.computeImageFeatures2(finder, image)
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
         image_features.img_idx = image_idx
         features.append(image_features)
 
-        if vlog:
-            vlog.start_timer(f"image_features.getKeypoints(...)")
+        _vlog_start_timer(vlog, "image_features.getKeypoints(...)")
         keypoints = image_features.getKeypoints()
-        if vlog:
-            vlog.end_timer()
+        _vlog_end_timer(vlog)
 
         feature_count = len(keypoints)
 
-        if vlog:
-            vlog.p(f"Found `{feature_count}` features.")
-            vlog.start_timer(f"Logging image with keypoints")
-            vlog.img(
-                cv.drawKeypoints(
-                    image,
-                    keypoints,
-                    image.copy(),
-                    color=(0, 255, 0),
-                    flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS | cv.DRAW_MATCHES_FLAGS_DRAW_OVER_OUTIMG,
-                ),
-                alt=f"SIFT keypoints in {file.name}",
-                style="max-height: 500px;",
-            )
-            vlog.end_timer()
+        _vlog_detected_features(vlog, file, image, keypoints)
 
         if feature_count < config.num_matches_thresh1:
-            if vlog:
-                vlog.err(f"Image `{file}` has too few SIFT keypoints: `{feature_count}`.")
+            _vlog_insufficient_features(vlog, file, feature_count)
             raise RuntimeError(f"Image {file} has too few SIFT keypoints: {feature_count}.")
 
-    if vlog:
-        vlog.end_timer()
-        vlog.log_elapsed("Feature Detection finished at")
+    _vlog_feature_detection_finish(vlog)
 
     return tuple(features)
+
+#region vlog
+
+def _vlog_feature_detection_start(vlog: MdLogger | None, image_count: int) -> None:
+    if not vlog:
+        return
+
+    vlog.h3("Feature Detection")
+    vlog.start_timer("Feature Detection (total)")
+    vlog.log_elapsed("Feature Detection starting at")
+    vlog.p(f"Detecting features on `{image_count}` images using SIFT")
+
+
+def _vlog_image_detection_start(vlog: MdLogger | None, file: Path) -> None:
+    if vlog:
+        vlog.p(f"Detecting features on image `{file.name}`")
+
+
+def _vlog_detected_features(
+        vlog: MdLogger | None,
+        file: Path,
+        image: ImageArray,
+        keypoints: Sequence[cv.KeyPoint],
+) -> None:
+    if not vlog:
+        return
+
+    vlog.p(f"Found `{len(keypoints)}` features.")
+    vlog.start_timer("Logging image with keypoints")
+    vlog.img(
+        cv.drawKeypoints(
+            image,
+            keypoints,
+            image.copy(),
+            color=(0, 255, 0),
+            flags=cv.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS | cv.DRAW_MATCHES_FLAGS_DRAW_OVER_OUTIMG,
+        ),
+        alt=f"SIFT keypoints in {file.name}",
+        style="max-height: 500px;",
+    )
+    vlog.end_timer()
+
+
+def _vlog_insufficient_features(vlog: MdLogger | None, file: Path, feature_count: int) -> None:
+    if vlog:
+        vlog.err(f"Image `{file}` has too few SIFT keypoints: `{feature_count}`.")
+
+
+def _vlog_feature_detection_finish(vlog: MdLogger | None) -> None:
+    if not vlog:
+        return
+
+    vlog.end_timer()
+    vlog.log_elapsed("Feature Detection finished at")
+
+#endregion

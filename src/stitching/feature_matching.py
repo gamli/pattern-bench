@@ -5,8 +5,9 @@ from typing import Sequence
 import cv2 as cv
 import numpy as np
 
+from src.stitching._verbose_logging import _vlog_end_timer, _vlog_start_timer
 from src.stitching.shared import FloatArray, StitchingConfig, StitchingImages
-from utils.md_logger import MdLogger
+from src.utils.md_logger import MdLogger
 
 
 @dataclass(frozen=True)
@@ -53,95 +54,49 @@ def match_features(
 
     image_count = stitching_images.count
 
-    pair_count = image_count * (image_count - 1) // 2
-
-    if vlog:
-        vlog.h3("Feature Matching")
-        vlog.start_timer(f"Feature Matching (total)")
-        vlog.log_elapsed("Feature Matching starting at")
-        vlog.p(f"Matching features on `{image_count}` images across `{pair_count}` image pairs.")
+    _vlog_feature_matching_start(vlog, image_count)
 
     if image_count == 1:
-        if vlog:
-            vlog.p("Only one image was provided; there are no image pairs to match.")
-            vlog.end_timer()
-            vlog.log_elapsed("Feature Matching finished at")
+        _vlog_no_pair_matches(vlog)
         return ()
 
-    if vlog:
-        vlog.p("**Matching Config**")
-        vlog.table(
-            ("Parameter", "Value"),
-            (
-                ("match_conf", config.match_conf),
-                ("num_matches_thresh1", config.num_matches_thresh1),
-                ("confidence_threshold", config.confidence_threshold),
-                ("min_inliers", config.min_inliers),
-                ("min_scale", config.min_scale),
-                ("max_scale", config.max_scale),
-                ("max_anisotropy", config.max_anisotropy),
-            ),
-        )
-        vlog.p("Running bidirectional descriptor matching and full affine RANSAC.")
+    _vlog_matching_config(vlog, config)
 
-    if vlog:
-        vlog.start_timer("matcher = cv.detail.AffineBestOf2NearestMatcher(...)")
-        vlog.p("**AffineBestOf2NearestMatcher config**")
-        vlog.table(
-            ("Parameter", "Value"),
-            (
-                ("full_affine", True),
-                ("try_use_gpu", config.use_gpu),
-                ("match_conf", config.match_conf),
-                ("num_matches_thresh1", config.num_matches_thresh1),
-            ),
-        )
+    _vlog_matcher_creation(vlog, config)
     matcher = cv.detail.AffineBestOf2NearestMatcher(
         full_affine=True,
         try_use_gpu=config.use_gpu,
         match_conf=config.match_conf,
         num_matches_thresh1=config.num_matches_thresh1,
     )
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.start_timer(f"config.apply_fixed_seed(...)")
+    _vlog_start_timer(vlog, "config.apply_fixed_seed(...)")
     config.apply_fixed_seed()
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.start_timer(f"Descriptor matching and affine RANSAC for all image pairs")
+    _vlog_start_timer(vlog, "Descriptor matching and affine RANSAC for all image pairs")
 
-    if vlog:
-        vlog.start_timer(f"pair_match_infos = matcher.apply2(...)")
+    _vlog_start_timer(vlog, "pair_match_infos = matcher.apply2(...)")
     all_pair_matches_infos = matcher.apply2(image_features)
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.start_timer(f"matcher.collectGarbage(...)")
+    _vlog_start_timer(vlog, "matcher.collectGarbage(...)")
     # just to release buffers and stuff early to save a little on memory
     matcher.collectGarbage()
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
-    if vlog:
-        vlog.end_timer()
+    _vlog_end_timer(vlog)
 
     keypoints = [feature.getKeypoints() for feature in image_features]
 
     pairs = []
 
-    if vlog:
-        vlog.start_timer(f"Evaluating/Visualizing all pair matches")
-        vlog.p("Evaluating image pair match infos and visualizing their matches.")
+    _vlog_pair_evaluation_start(vlog)
 
     for i, j in itertools.combinations(range(image_count), 2):
 
-        if vlog:
-            vlog.start_timer(f"Evaluating/Visualizing pair {i} <-> {j} matches")
+        _vlog_start_timer(vlog, "Evaluating/Visualizing pair {} <-> {} matches", i, j)
 
         matches_info = all_pair_matches_infos[i * image_count + j]
 
@@ -184,35 +139,17 @@ def match_features(
         )
         pairs.append(pair)
 
-        if vlog:
-            vlog.start_timer(f"Logging image pair {i} <-> {j} with matches")
-        if vlog:
-            _log_pair_matches(
-                vlog,
-                image_features[i],
-                image_features[j],
-                stitching_images,
-                matches_info,
-                pair,
-            )
-        if vlog:
-            vlog.end_timer()
-
-        if vlog:
-            vlog.end_timer()
-
-    accepted = [pair for pair in pairs if pair.accepted]
-
-    if vlog:
-        vlog.end_timer()
-        vlog.p(
-            "**Matching result:** "
-            f"Accepted `{len(accepted)}` of `{pair_count}` image pairs with "
-            f"`{sum(len(pair.keypoints_i) for pair in accepted)}` inlier correspondences; "
-            f"rejected `{pair_count - len(accepted)}` pairs."
+        _vlog_pair_matches(
+            vlog,
+            image_features[i],
+            image_features[j],
+            stitching_images,
+            matches_info,
+            pair,
         )
-        vlog.end_timer()
-        vlog.log_elapsed("Feature Matching finished at")
+        _vlog_end_timer(vlog)
+
+    _vlog_matching_result(vlog, pairs, image_count)
 
     return tuple(pairs)
 
@@ -237,13 +174,96 @@ def _rejection_reason(
     return None
 
 
+#region vlog
+
 # Bound affine-overlay allocations: about 300 MB per uint8 BGR canvas.
 _MAX_AFFINE_OVERLAY_PIXELS = 100_000_000
 _MAX_AFFINE_OVERLAY_SIDE = 30_000
 
+def _vlog_feature_matching_start(vlog: MdLogger | None, image_count: int) -> None:
+    if not vlog:
+        return
 
-def _log_pair_matches(
-        vlog: MdLogger,
+    pair_count = image_count * (image_count - 1) // 2
+    vlog.h3("Feature Matching")
+    vlog.start_timer("Feature Matching (total)")
+    vlog.log_elapsed("Feature Matching starting at")
+    vlog.p(f"Matching features on `{image_count}` images across `{pair_count}` image pairs.")
+
+
+def _vlog_no_pair_matches(vlog: MdLogger | None) -> None:
+    if not vlog:
+        return
+
+    vlog.p("Only one image was provided; there are no image pairs to match.")
+    vlog.end_timer()
+    vlog.log_elapsed("Feature Matching finished at")
+
+
+def _vlog_matching_config(vlog: MdLogger | None, config: StitchingConfig) -> None:
+    if not vlog:
+        return
+
+    vlog.p("**Matching Config**")
+    vlog.table(
+        ("Parameter", "Value"),
+        (
+            ("match_conf", config.match_conf),
+            ("num_matches_thresh1", config.num_matches_thresh1),
+            ("confidence_threshold", config.confidence_threshold),
+            ("min_inliers", config.min_inliers),
+            ("min_scale", config.min_scale),
+            ("max_scale", config.max_scale),
+            ("max_anisotropy", config.max_anisotropy),
+        ),
+    )
+    vlog.p("Running bidirectional descriptor matching and full affine RANSAC.")
+
+
+def _vlog_matcher_creation(vlog: MdLogger | None, config: StitchingConfig) -> None:
+    if not vlog:
+        return
+
+    vlog.start_timer("matcher = cv.detail.AffineBestOf2NearestMatcher(...)")
+    vlog.p("**AffineBestOf2NearestMatcher config**")
+    vlog.table(
+        ("Parameter", "Value"),
+        (
+            ("full_affine", True),
+            ("try_use_gpu", config.use_gpu),
+            ("match_conf", config.match_conf),
+            ("num_matches_thresh1", config.num_matches_thresh1),
+        ),
+    )
+
+
+def _vlog_pair_evaluation_start(vlog: MdLogger | None) -> None:
+    if not vlog:
+        return
+
+    vlog.start_timer("Evaluating/Visualizing all pair matches")
+    vlog.p("Evaluating image pair match infos and visualizing their matches.")
+
+
+def _vlog_matching_result(vlog: MdLogger | None, pairs: Sequence[PairwiseMatch], image_count: int) -> None:
+    if not vlog:
+        return
+
+    accepted = [pair for pair in pairs if pair.accepted]
+    pair_count = image_count * (image_count - 1) // 2
+    vlog.end_timer()
+    vlog.p(
+        "**Matching result:** "
+        f"Accepted `{len(accepted)}` of `{pair_count}` image pairs with "
+        f"`{sum(len(pair.keypoints_i) for pair in accepted)}` inlier correspondences; "
+        f"rejected `{pair_count - len(accepted)}` pairs."
+    )
+    vlog.end_timer()
+    vlog.log_elapsed("Feature Matching finished at")
+
+
+def _vlog_pair_matches(
+        vlog: MdLogger | None,
         features_i: cv.detail.ImageFeatures,
         features_j: cv.detail.ImageFeatures,
         stitching_images: StitchingImages,
@@ -251,6 +271,12 @@ def _log_pair_matches(
         pairwise_match: PairwiseMatch,
 ) -> None:
     """Preview accepted inliers; link other match views."""
+    if not vlog:
+        return
+
+    vlog.start_timer(
+        f"Logging image pair {pairwise_match.image_idx_i} <-> {pairwise_match.image_idx_j} with matches"
+    )
     file_i = stitching_images.scan_files[features_i.img_idx]
     file_j = stitching_images.scan_files[features_j.img_idx]
 
@@ -417,3 +443,7 @@ def _log_pair_matches(
                 alt=f"{label}, {overlay_caption}",
                 style="max-height: 500px;",
             )
+
+    vlog.end_timer()
+
+#endregion
