@@ -11,7 +11,7 @@ from .feature_matching import PairwiseMatch
 from .shared import StitchingConfig, StitchingImages, FloatArray
 
 
-def estimate_global_affine(
+def estimate_global_transforms(
         pairwise_matches: Sequence[PairwiseMatch],
         stitching_images: StitchingImages,
         config: StitchingConfig,
@@ -249,9 +249,9 @@ def _vlog_estimation_start(vlog: MdLogger | None, image_count: int, config: Stit
     if not vlog:
         return
 
-    vlog.h3("Global Rigid Estimation")
-    vlog.start_timer("Global Rigid Estimation (total)")
-    vlog.log_elapsed("Global Rigid Estimation starting at")
+    vlog.h3("Global Transformation Estimation")
+    vlog.start_timer("Global Transformation Estimation (total)")
+    vlog.log_elapsed("Global Transformation Estimation starting at")
     vlog.p(f"Registering `{image_count}` images jointly; image `0` is fixed to identity.")
     vlog.table(
         ("Parameter", "Value"),
@@ -312,7 +312,7 @@ def _vlog_estimation_result(vlog: MdLogger | None, transforms: Sequence[FloatArr
     if not vlog:
         return
 
-    vlog.h4("Global rigid estimation result")
+    vlog.h4("Global transformation estimation result")
     vlog.p(f"Returning `{len(transforms)}` global transforms mapping each image to reference image `0`.")
     _vlog_estimation_finish(vlog)
 
@@ -322,7 +322,7 @@ def _vlog_estimation_finish(vlog: MdLogger | None) -> None:
         return
 
     vlog.end_timer()
-    vlog.log_elapsed("Global Rigid Estimation finished at")
+    vlog.log_elapsed("Global Transformation Estimation finished at")
 
 
 def _vlog_solver_result(vlog: MdLogger | None, result: OptimizeResult) -> None:

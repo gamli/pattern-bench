@@ -6,7 +6,7 @@ from typing import Protocol
 from scanner.calibration import apply_scanner_calibration, ScannerCalibration
 from stitching.shared import StitchingConfig
 from stitching.composition import compose_images
-from stitching.estimate_global_affine import estimate_global_affine
+from stitching.transformation_estimation import estimate_global_transforms
 from stitching.feature_detection import detect_features
 from stitching.feature_matching import match_features
 from utils.md_logger import MdLogger
@@ -85,7 +85,7 @@ def _run(args: StitchScansArgs) -> None:
     corrected_stitching_images = apply_scanner_calibration(stitching_images, scanner_calibration, config.vlog)
     features = detect_features(corrected_stitching_images, config)
     pairwise_matches = match_features(features, corrected_stitching_images, config)
-    image_transforms = estimate_global_affine(pairwise_matches, corrected_stitching_images, config)
+    image_transforms = estimate_global_transforms(pairwise_matches, corrected_stitching_images, config)
     composed = compose_images(image_transforms, corrected_stitching_images, config)
 
     save_output_image(composed.image, composed.dpi, output_image_file)
