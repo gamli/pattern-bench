@@ -3,14 +3,15 @@ import shutil
 from pathlib import Path
 from typing import Protocol
 
-from cli.commands.utils import save_output_image, load_scan_images
 from scanner.calibration import apply_scanner_calibration, ScannerCalibration
-from src.stitching.shared import StitchingConfig
+from stitching.shared import StitchingConfig
 from stitching.composition import compose_images
 from stitching.estimate_global_affine import estimate_global_affine
 from stitching.feature_detection import detect_features
 from stitching.feature_matching import match_features
 from utils.md_logger import MdLogger
+
+from ..utils import save_output_image, load_scan_images
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

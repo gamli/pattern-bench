@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from scanner.constants import SCANNER_DPI
-from src.utils.md_logger import MdLogger
+from utils.md_logger import MdLogger
 
 ImageArray = NDArray[np.uint8]
 FloatArray = NDArray[np.float64]

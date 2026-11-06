@@ -1,6 +1,6 @@
 ﻿import argparse
 
-from src.cli.commands import register_commands
+from .commands import register_commands
 
 
 def main() -> None:

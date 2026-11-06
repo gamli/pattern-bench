@@ -7,8 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from src.stitching.shared import ImageArray
-from stitching.shared import StitchingImages
+from stitching.shared import ImageArray, StitchingImages
 
 
 def save_output_image(image: ImageArray, dpi: float | None, file: Path) -> None:

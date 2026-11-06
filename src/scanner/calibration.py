@@ -9,9 +9,10 @@ import numpy as np
 from PIL import Image
 
 import utils.global_paths as gp
-from scanner.constants import SCANNER_DPI, AVAILABLE_SCANNER_DPIS
 from stitching.shared import StitchingImages, ImageArray
 from utils.md_logger import MdLogger
+
+from .constants import SCANNER_DPI, AVAILABLE_SCANNER_DPIS
 
 _SCALE_X_VAR = "scale_x"
 _SCALE_Y_VAR = "scale_y"

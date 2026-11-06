@@ -2,8 +2,9 @@ import argparse
 from pathlib import Path
 from typing import Protocol
 
-from cli.commands.utils import save_output_image, load_scan_images
 from scanner.calibration import apply_scanner_calibration, ScannerCalibration
+
+from ..utils import save_output_image, load_scan_images
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

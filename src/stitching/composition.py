@@ -6,9 +6,10 @@ import cv2 as cv
 import numpy as np
 from numpy.typing import NDArray
 
-from src.stitching._verbose_logging import _vlog_end_timer, _vlog_start_timer
-from src.stitching.shared import ImageArray, FloatArray, StitchingImages, StitchingConfig
-from src.utils.md_logger import MdLogger
+from utils.md_logger import MdLogger
+
+from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
+from .shared import ImageArray, FloatArray, StitchingImages, StitchingConfig
 
 
 @dataclass(frozen=True)

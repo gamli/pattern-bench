@@ -1,6 +1,6 @@
 """Small logging helpers shared by the stitching stages."""
 
-from src.utils.md_logger import MdLogger
+from utils.md_logger import MdLogger
 
 
 def _vlog_start_timer(vlog: MdLogger | None, label: str, *label_args: object) -> None:

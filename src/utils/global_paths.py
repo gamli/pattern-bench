@@ -1,6 +1,6 @@
 ﻿import platformdirs as pd
 
-from utils.constants import APP_NAME
+from .constants import APP_NAME
 
 config_dir = pd.user_config_path(
     APP_NAME,

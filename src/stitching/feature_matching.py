@@ -5,9 +5,10 @@ from typing import Sequence
 import cv2 as cv
 import numpy as np
 
-from src.stitching._verbose_logging import _vlog_end_timer, _vlog_start_timer
-from src.stitching.shared import FloatArray, StitchingConfig, StitchingImages
-from src.utils.md_logger import MdLogger
+from utils.md_logger import MdLogger
+
+from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
+from .shared import FloatArray, StitchingConfig, StitchingImages
 
 
 @dataclass(frozen=True)

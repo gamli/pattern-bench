@@ -4,10 +4,11 @@ import cv2 as cv
 import numpy as np
 from scipy.optimize import OptimizeResult, least_squares
 
-from src.stitching._verbose_logging import _vlog_end_timer, _vlog_error, _vlog_start_timer
-from src.stitching.feature_matching import PairwiseMatch
-from src.stitching.shared import StitchingConfig, StitchingImages, FloatArray
-from src.utils.md_logger import MdLogger
+from utils.md_logger import MdLogger
+
+from ._verbose_logging import _vlog_end_timer, _vlog_error, _vlog_start_timer
+from .feature_matching import PairwiseMatch
+from .shared import StitchingConfig, StitchingImages, FloatArray
 
 
 def estimate_global_affine(
