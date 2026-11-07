@@ -3,6 +3,7 @@ from typing import Sequence
 
 import cv2 as cv
 
+from cli.commands.utils import print_info, start_info_timer, print_peak_memory
 from utils.md_logger import MdLogger
 
 from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
@@ -19,6 +20,9 @@ def detect_features(
     resized, and returned keypoints use the original pixel coordinates.
     """
 
+    print_info("Detecting Features")
+    info_timer = start_info_timer()
+
     vlog = config.vlog
 
     _vlog_feature_detection_start(vlog, stitching_images.count)
@@ -30,6 +34,8 @@ def detect_features(
     features = []
 
     for image_idx, [file, image] in enumerate(stitching_images.files_and_images):
+
+        print_info(f"Computing Image Features for: {file.name}")
 
         _vlog_image_detection_start(vlog, file)
 
@@ -55,6 +61,9 @@ def detect_features(
         if feature_count < config.num_matches_thresh1:
             _vlog_insufficient_features(vlog, file, feature_count)
             raise RuntimeError(f"Image {file} has too few SIFT keypoints: {feature_count}.")
+
+        print_peak_memory("After Image")
+        info_timer.print(f"\tDone")
 
     _vlog_feature_detection_finish(vlog)
 

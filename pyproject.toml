@@ -7,6 +7,7 @@ dependencies = [
     "opencv-python==5.*",
     "pillow==13.*",
     "platformdirs==4.*",
+    "psutil==7.*",
     "scipy==1.*",
 ]
 
@@ -17,4 +18,5 @@ dev = [
     "matplotlib==3.*",
     "opencv-jupyter-ui==1.*",
     "scipy-stubs==1.*",
+    "types-psutil==7.*",
 ]

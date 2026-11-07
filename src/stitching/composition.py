@@ -1,11 +1,12 @@
 ﻿from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
 
 import cv2 as cv
 import numpy as np
 from numpy.typing import NDArray
 
+from cli.commands.utils import print_info, start_info_timer
 from utils.md_logger import MdLogger
 
 from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
@@ -44,6 +45,9 @@ def compose_images(
     independent INTER_NEAREST support masks exclude pixels outside the scans.
     """
 
+    print_info("Composing images")
+    info_timer = start_info_timer()
+
     vlog = config.vlog
     _vlog_composition_start(vlog, stitching_images.count)
 
@@ -55,6 +59,8 @@ def compose_images(
 
     source_transforms: list[FloatArray] = []
     all_corners: list[NDArray[np.float64]] = []
+
+    print_info("Initializing transforms")
 
     for i in range(len(image_transforms)):
         transform = np.asarray(image_transforms[i], dtype=np.float64)
@@ -91,6 +97,10 @@ def compose_images(
     supports = []
     canvas_corners = []
     covered_counts = []
+
+    info_timer.print(f"\tDone")
+
+    print_info("Warping images")
 
     _vlog_start_timer(vlog, "Warping all images")
 
@@ -133,6 +143,8 @@ def compose_images(
 
         _vlog_end_timer(vlog)
 
+    info_timer.print(f"\tDone")
+
     _vlog_end_timer(vlog)
 
     _vlog_coverage(vlog, warped_images, canvas_corners, coverage)
@@ -140,14 +152,18 @@ def compose_images(
     _vlog_start_timer(vlog, "Full-resolution `COLOR_GRAD` seaming")
 
     try:
+        print_info("Finding seams")
         seam_masks = cv.detail.DpSeamFinder("COLOR_GRAD").find(
             warped_images,
             canvas_corners,
             [cv.UMat(support) for support in supports],
         )
+        info_timer.print(f"\tDone")
     except cv.error as error:
         _vlog_composition_error(vlog, "Dynamic-programming seam estimation failed: {}", error)
         raise
+
+    print_info("Stitching with seams")
 
     owners = np.zeros_like(coverage)
     conflicts = 0
@@ -198,7 +214,7 @@ def compose_images(
     seam_area_mask = owners != 0
     seam_areas = output.copy()
     seam_areas[seam_area_mask] = seam_area_colors[(owners[seam_area_mask] - 1) % len(seam_area_colors)]
-    output_with_seam_areas = cv.addWeighted(output, 0.6, seam_areas, 0.4, 0)
+    output_with_seam_areas = cast(ImageArray, cv.addWeighted(output, 0.6, seam_areas, 0.4, 0))
 
     _vlog_end_timer(vlog)
 
@@ -212,6 +228,8 @@ def compose_images(
         if dpi is not None
     ]
     output_dpi = float(np.median(output_dpis)) if output_dpis else None
+
+    info_timer.print(f"\tDone")
 
     return CompositionResult(
         image=output,

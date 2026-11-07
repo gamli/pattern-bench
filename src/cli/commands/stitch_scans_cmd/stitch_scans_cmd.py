@@ -4,14 +4,13 @@ from pathlib import Path
 from typing import Protocol
 
 from scanner.calibration import apply_scanner_calibration, ScannerCalibration
-from stitching.shared import StitchingConfig
 from stitching.composition import compose_images
-from stitching.transformation_estimation import estimate_global_transforms
 from stitching.feature_detection import detect_features
 from stitching.feature_matching import match_features
+from stitching.shared import StitchingConfig
+from stitching.transformation_estimation import estimate_global_transforms
 from utils.md_logger import MdLogger
-
-from ..utils import save_output_image, load_scan_images
+from ..utils import save_output_image, load_scan_images, print_info, start_info_timer, print_peak_memory
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -62,7 +61,13 @@ class StitchScansArgs(Protocol):
 
 
 def _run(args: StitchScansArgs) -> None:
+    print_info("Running stitch-scans")
+
+    info_timer = start_info_timer()
+
+    print_info("Loading images")
     stitching_images = load_scan_images(args.scan_files)
+    info_timer.print("\tDone")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,7 +83,8 @@ def _run(args: StitchScansArgs) -> None:
     verbose_dir = args.output_dir / "verbose"
     if verbose_dir.exists():
         shutil.rmtree(verbose_dir)
-    verbose_dir.mkdir()
+    if args.verbose:
+        verbose_dir.mkdir()
 
     vlog = MdLogger(verbose_dir / "log.md") if args.verbose else None
 
@@ -90,11 +96,33 @@ def _run(args: StitchScansArgs) -> None:
     config.configure_opencv()
 
     scanner_calibration = ScannerCalibration()
+
+    print_peak_memory("Initial")
+
+    print_info("1. Calibration")
     corrected_stitching_images = apply_scanner_calibration(stitching_images, scanner_calibration, config.vlog)
+    print_peak_memory("After Calibration")
+    info_timer.print("\tDone")
+
+    print_info("2. Detect Features")
     features = detect_features(corrected_stitching_images, config)
+    print_peak_memory("After Detect Features")
+    info_timer.print("\tDone")
+
+    print_info("3. Match Features")
     pairwise_matches = match_features(features, corrected_stitching_images, config)
+    print_peak_memory("After ")
+    info_timer.print("\tDone")
+
+    print_info("4. Transforms")
     image_transforms = estimate_global_transforms(pairwise_matches, corrected_stitching_images, config)
+    print_peak_memory("After Match Features")
+    info_timer.print("\tDone")
+
+    print_info("5. Compose")
     composed = compose_images(image_transforms, corrected_stitching_images, config)
+    print_peak_memory("After Compose")
+    info_timer.print("\tDone")
 
     save_output_image(composed.image, composed.dpi, output_image_file)
     save_output_image(composed.image_with_seams, composed.dpi, output_image_with_seams_file)

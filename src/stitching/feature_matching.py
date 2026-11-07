@@ -5,8 +5,8 @@ from typing import Sequence
 import cv2 as cv
 import numpy as np
 
+from cli.commands.utils import print_info, start_info_timer
 from utils.md_logger import MdLogger
-
 from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
 from .shared import FloatArray, StitchingConfig, StitchingImages
 
@@ -51,6 +51,9 @@ def match_features(
     function does not set a seed, thread count, or OpenCL policy.
     """
 
+    print_info("Matching Features")
+    info_timer = start_info_timer()
+
     vlog = config.vlog
 
     image_count = stitching_images.count
@@ -79,7 +82,9 @@ def match_features(
     _vlog_start_timer(vlog, "Descriptor matching and affine RANSAC for all image pairs")
 
     _vlog_start_timer(vlog, "pair_match_infos = matcher.apply2(...)")
+    print_info("Apply OpenCV Matcher")
     all_pair_matches_infos = matcher.apply2(image_features)
+    info_timer.print("\tDone")
     _vlog_end_timer(vlog)
 
     _vlog_start_timer(vlog, "matcher.collectGarbage(...)")
@@ -95,7 +100,13 @@ def match_features(
 
     _vlog_pair_evaluation_start(vlog)
 
+    print_info("Handle Match results for all image pairs")
+
     for i, j in itertools.combinations(range(image_count), 2):
+
+        # name_i = stitching_images.scan_files[i].name
+        # name_j = stitching_images.scan_files[j].name
+        # print_info(f"Handle Match results for image pair: {name_i} <-> {name_j}")
 
         _vlog_start_timer(vlog, "Evaluating/Visualizing pair {} <-> {} matches", i, j)
 
@@ -150,6 +161,8 @@ def match_features(
         )
         _vlog_end_timer(vlog)
 
+    info_timer.print("\tDone")
+
     _vlog_matching_result(vlog, pairs, image_count)
 
     return tuple(pairs)
@@ -175,11 +188,12 @@ def _rejection_reason(
     return None
 
 
-#region vlog
+# region vlog
 
 # Bound affine-overlay allocations: about 300 MB per uint8 BGR canvas.
 _MAX_AFFINE_OVERLAY_PIXELS = 100_000_000
 _MAX_AFFINE_OVERLAY_SIDE = 30_000
+
 
 def _vlog_feature_matching_start(vlog: MdLogger | None, image_count: int) -> None:
     if not vlog:
@@ -447,4 +461,4 @@ def _vlog_pair_matches(
 
     vlog.end_timer()
 
-#endregion
+# endregion

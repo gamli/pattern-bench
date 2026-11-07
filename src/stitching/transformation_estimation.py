@@ -4,6 +4,7 @@ import cv2 as cv
 import numpy as np
 from scipy.optimize import OptimizeResult, least_squares
 
+from cli.commands.utils import print_info, start_info_timer
 from utils.md_logger import MdLogger
 
 from ._rigid_geometry import fit_rigid_transform
@@ -33,13 +34,18 @@ def estimate_global_transforms(
     keeping the same rigid model and ending at original image resolution.
     """
 
+    print_info("Estimate Global Transformations")
+    info_timer = start_info_timer()
+
     vlog = config.vlog
 
     _vlog_estimation_start(vlog, stitching_images.count, config)
 
     try:
         _vlog_start_timer(vlog, "check_connectivity(...)")
+        print_info("Checking Connectivity")
         _check_connectivity(pairwise_matches, stitching_images.count)
+        info_timer.print(f"\tDone")
         _vlog_end_timer(vlog)
     except (ValueError, RuntimeError) as error:
         _vlog_error(vlog, error)
@@ -60,6 +66,7 @@ def estimate_global_transforms(
             _vlog_invalid_pair(vlog, pair, "matched coordinates must be finite")
             raise ValueError("Matched coordinates must be finite.")
 
+    print_info("Computing pixel pyramids")
     pixel_pyramids = None
     if config.pixel_refinement:
         _vlog_start_timer(vlog, "Preparing pixel contrast pyramids")
@@ -73,6 +80,7 @@ def estimate_global_transforms(
             _vlog_error(vlog, message)
             _vlog_estimation_finish(vlog)
             raise RuntimeError(message) from error
+    info_timer.print(f"\tDone")
 
     _vlog_start_timer(vlog, "coefficient/target initialization")
 
@@ -104,11 +112,15 @@ def estimate_global_transforms(
     _vlog_estimation_system(vlog, pairwise_matches, coefficient_blocks, coefficients, targets)
 
     _vlog_start_timer(vlog, "Kabsch initialization")
+    print_info("Computing Initial Kabsch Solution")
     solution = _initial_rigid_solution(pairwise_matches, stitching_images.count)
+    info_timer.print(f"\tDone")
     _vlog_end_timer(vlog)
 
     _vlog_start_timer(vlog, "Initial Levenberg-Marquardt")
+    print_info("Computing Initial Levenberg-Marquardt Solution")
     solution, rank = _solve_rigid(coefficients, targets, solution, vlog=vlog)
+    info_timer.print(f"\tDone")
     _vlog_end_timer(vlog)
 
     _vlog_estimation_step(
@@ -116,6 +128,7 @@ def estimate_global_transforms(
         pairwise_matches, stitching_images, config.huber_delta, rank=rank,
     )
 
+    print_info("Running IRLS iterations")
     for iteration in range(config.irls_iterations):
 
         _vlog_start_timer(vlog, "IRLS iteration {} / {}", iteration + 1, config.irls_iterations)
@@ -139,6 +152,7 @@ def estimate_global_transforms(
             title_args=(iteration + 1, config.irls_iterations),
         )
         _vlog_end_timer(vlog)
+    info_timer.print(f"\tDone")
 
     transforms = [np.eye(3, dtype=np.float64)]
     for index in range(stitching_images.count - 1):
@@ -150,11 +164,13 @@ def estimate_global_transforms(
         transforms.append(transform)
 
     if pixel_pyramids is not None:
+        print_info("Running pixel based refinement")
         transforms = list(refine_global_pixels(transforms, pairwise_matches, pixel_pyramids, config))
         try:
             _vlog_alignment(vlog, "Pixel refinement", stitching_images, transforms, pairwise_matches)
         except (cv.error, MemoryError) as error:
             _vlog_error(vlog, f"Could not render the pixel-refined alignment: {error}")
+        info_timer.print(f"\tDone")
 
     _vlog_estimation_result(vlog, transforms)
 
