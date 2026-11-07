@@ -87,6 +87,7 @@ def _run(args: StitchScansArgs) -> None:
         use_fixed_seed=args.use_fixed_seed,
         pixel_refinement=not args.no_pixel_refinement,
     )
+    config.configure_opencv()
 
     scanner_calibration = ScannerCalibration()
     corrected_stitching_images = apply_scanner_calibration(stitching_images, scanner_calibration, config.vlog)
