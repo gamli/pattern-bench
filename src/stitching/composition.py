@@ -1,5 +1,4 @@
 ﻿from dataclasses import dataclass
-from pathlib import Path
 from typing import Sequence, cast
 
 import cv2 as cv
@@ -7,9 +6,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cli.commands.utils import print_info, start_info_timer
-from utils.md_logger import MdLogger
-
-from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
 from .shared import ImageArray, FloatArray, StitchingImages, StitchingConfig
 
 
@@ -33,7 +29,6 @@ class CompositionResult:
 def compose_images(
         image_transforms: Sequence[FloatArray],
         stitching_images: StitchingImages,
-        config: StitchingConfig,
 ) -> CompositionResult:
     """Warp originals at full resolution and copy pixels across hard DP seams.
 
@@ -48,14 +43,8 @@ def compose_images(
     print_info("Composing images")
     info_timer = start_info_timer()
 
-    vlog = config.vlog
-    _vlog_composition_start(vlog, stitching_images.count)
-
     if not stitching_images.count or len(image_transforms) != stitching_images.count:
-        _vlog_composition_error(vlog, "Provide at least one image and one affine transform per image.")
         raise ValueError("Provide at least one image and one affine transform per image.")
-
-    _vlog_start_timer(vlog, "Checking transforms")
 
     source_transforms: list[FloatArray] = []
     all_corners: list[NDArray[np.float64]] = []
@@ -64,12 +53,11 @@ def compose_images(
 
     for i in range(len(image_transforms)):
         transform = np.asarray(image_transforms[i], dtype=np.float64)
-        if (transform.shape != (3, 3) or not np.isfinite(transform).all()
+        if (transform.shape != (3, 3)
+                or not np.isfinite(transform).all()
                 or not np.array_equal(transform[2], [0.0, 0.0, 1.0])):
-            _vlog_composition_error(vlog, "Image {}: transform must be a finite homogeneous affine 3x3 matrix.", i)
             raise ValueError("Transforms must be finite homogeneous affine 3x3 matrices.")
         if abs(np.linalg.det(transform[:2, :2])) < 1e-12:
-            _vlog_composition_error(vlog, "Image {}: affine transform must be invertible.", i)
             raise ValueError("Affine transforms must be invertible.")
         source_transforms.append(transform)
         height, width = stitching_images.scan_images[i].shape[:2]
@@ -83,13 +71,8 @@ def compose_images(
     with np.errstate(over="ignore", invalid="ignore"):
         size = upper - lower
     if not np.isfinite(size).all() or np.any(size <= 0):
-        _vlog_composition_error(vlog, "Transformed image bounds must be finite and nonempty.")
         raise ValueError("Transformed image bounds must be finite and nonempty.")
     width, height = map(int, size)
-
-    _vlog_end_timer(vlog)
-
-    _vlog_canvas(vlog, width, height, lower)
 
     coverage = np.zeros((height, width), dtype=np.min_scalar_type(stitching_images.count))
     canvas_transforms = []
@@ -102,12 +85,7 @@ def compose_images(
 
     print_info("Warping images")
 
-    _vlog_start_timer(vlog, "Warping all images")
-
     for i, (image, source_transform) in enumerate(zip(stitching_images.scan_images, source_transforms)):
-
-        _vlog_start_timer(vlog, "Warping image {} / {}", i + 1, stitching_images.count)
-
         transform = source_transform.copy()
         transform[:2, 2] -= lower
         canvas_transforms.append(transform)
@@ -117,18 +95,14 @@ def compose_images(
         local_transform = transform[:2].copy()
         local_transform[:, 2] -= (x, y)
         local_size = (right - x, bottom - y)
-        try:
-            warped = cv.warpAffine(
-                image, local_transform, local_size,
-                flags=cv.INTER_LINEAR, borderMode=cv.BORDER_REPLICATE,
-            )
-            support = cv.warpAffine(
-                np.full(image.shape[:2], 255, dtype=np.uint8), local_transform, local_size,
-                flags=cv.INTER_NEAREST, borderMode=cv.BORDER_CONSTANT, borderValue=0,
-            )
-        except cv.error as error:
-            _vlog_composition_error(vlog, "Affine warping failed for image {}: {}", i, error)
-            raise
+        warped = cv.warpAffine(
+            image, local_transform, local_size,
+            flags=cv.INTER_LINEAR, borderMode=cv.BORDER_REPLICATE,
+        )
+        support = cv.warpAffine(
+            np.full(image.shape[:2], 255, dtype=np.uint8), local_transform, local_size,
+            flags=cv.INTER_NEAREST, borderMode=cv.BORDER_CONSTANT, borderValue=0,
+        )
         valid = support != 0
         warped[~valid] = 0
         coverage[y:bottom, x:right] += valid
@@ -137,31 +111,15 @@ def compose_images(
         supports.append(support)
         canvas_corners.append((x, y))
 
-        _vlog_warped_image(
-            vlog, i, stitching_images.scan_files[i], local_size, canvas_corners[-1], covered_counts[-1], transform,
-        )
-
-        _vlog_end_timer(vlog)
-
     info_timer.print(f"\tDone")
 
-    _vlog_end_timer(vlog)
-
-    _vlog_coverage(vlog, warped_images, canvas_corners, coverage)
-
-    _vlog_start_timer(vlog, "Full-resolution `COLOR_GRAD` seaming")
-
-    try:
-        print_info("Finding seams")
-        seam_masks = cv.detail.DpSeamFinder("COLOR_GRAD").find(
-            warped_images,
-            canvas_corners,
-            [cv.UMat(support) for support in supports],
-        )
-        info_timer.print(f"\tDone")
-    except cv.error as error:
-        _vlog_composition_error(vlog, "Dynamic-programming seam estimation failed: {}", error)
-        raise
+    print_info("Finding seams")
+    seam_masks = cv.detail.DpSeamFinder("COLOR_GRAD").find(
+        warped_images,
+        canvas_corners,
+        [cv.UMat(support) for support in supports],
+    )
+    info_timer.print(f"\tDone")
 
     print_info("Stitching with seams")
 
@@ -174,10 +132,6 @@ def compose_images(
         conflicts += int(np.count_nonzero(candidate & (region != 0)))
         np.copyto(region, i + 1, where=candidate & (region == 0))
     del seam_masks, seam_mask, candidate
-
-    _vlog_end_timer(vlog)
-
-    _vlog_start_timer(vlog, "Resolve ties")
 
     # Coincident scans can retain overlapping seam masks. Resolve ties by image
     # index, and restore any seam holes from valid support without mixing colors.
@@ -216,12 +170,6 @@ def compose_images(
     seam_areas[seam_area_mask] = seam_area_colors[(owners[seam_area_mask] - 1) % len(seam_area_colors)]
     output_with_seam_areas = cast(ImageArray, cv.addWeighted(output, 0.6, seam_areas, 0.4, 0))
 
-    _vlog_end_timer(vlog)
-
-    _vlog_composition_result(
-        vlog, conflicts, restored, covered_counts, selected_counts, output, output_with_seams, output_with_seam_areas,
-    )
-
     output_dpis = [
         dpi * np.sqrt(abs(np.linalg.det(transform[:2, :2])))
         for dpi, transform in zip(stitching_images.scan_dpis, image_transforms)
@@ -239,127 +187,3 @@ def compose_images(
         coverage=coverage,
         transforms=tuple(canvas_transforms),
     )
-
-
-#region vlog
-
-def _vlog_composition_start(vlog: MdLogger | None, image_count: int) -> None:
-    if not vlog:
-        return
-
-    vlog.h3("Image Composition")
-    vlog.start_timer("Image Composition (total)")
-    vlog.log_elapsed("Image Composition starting at")
-    vlog.p(f"Composing `{image_count}` images at full resolution using hard seams.")
-    vlog.p("Seam finder: OpenCV `DpSeamFinder`, cost `COLOR_GRAD`; each output pixel uses one warped source.")
-
-
-def _vlog_composition_error(vlog: MdLogger | None, message: str, *message_args: object) -> None:
-    if not vlog:
-        return
-
-    vlog.err(message.format(*message_args) if message_args else message)
-    vlog.end_timer()
-    vlog.log_elapsed("Image Composition finished at")
-
-
-def _vlog_canvas(vlog: MdLogger | None, width: int, height: int, lower: FloatArray) -> None:
-    if not vlog:
-        return
-
-    vlog.p(f"Output canvas: `{width} x {height}` px; shared offset: `({-lower[0]:.0f}, {-lower[1]:.0f})` px.")
-    vlog.h4("Warping source images")
-
-
-def _vlog_warped_image(
-        vlog: MdLogger | None,
-        index: int,
-        file: Path,
-        size: tuple[int, int],
-        corner: tuple[int, int],
-        covered_count: int,
-        transform: FloatArray,
-) -> None:
-    if not vlog:
-        return
-
-    vlog.p(
-        f"Image `{index}` (`{file}`): "
-        f"warped to `{size[0]} x {size[1]}` px at `({corner[0]}, {corner[1]})`; "
-        f"covers `{covered_count}` pixels."
-    )
-    vlog.code(np.array2string(transform, precision=8))
-
-
-def _vlog_coverage(
-        vlog: MdLogger | None,
-        warped_images: Sequence[ImageArray],
-        corners: Sequence[tuple[int, int]],
-        coverage: NDArray[np.unsignedinteger],
-) -> None:
-    if not vlog:
-        return
-
-    vlog.table(
-        ("Coverage", "Pixels"),
-        (
-            ("Covered", np.count_nonzero(coverage)),
-            ("Overlapping (at least two images)", np.count_nonzero(coverage > 1)),
-            ("Uncovered", np.count_nonzero(coverage == 0)),
-        ),
-    )
-    vlog.h4("Averaged overlay")
-    vlog.start_timer("Logging Averaged overlay")
-
-    height, width = coverage.shape
-    average_overlay = np.empty((height, width, 3), dtype=np.uint8)
-    for row in range(0, height, 256):
-        bottom = min(row + 256, height)
-        accumulated = np.zeros((bottom - row, width, 3), dtype=np.float32)
-        for image, (x, y) in zip(warped_images, corners):
-            top = max(row, y)
-            end = min(bottom, y + image.shape[0])
-            if top < end:
-                accumulated[top - row:end - row, x:x + image.shape[1]] += image[top - y:end - y]
-        np.divide(accumulated, np.maximum(coverage[row:bottom, :, None], 1), out=accumulated)
-        np.rint(accumulated, out=accumulated)
-        np.clip(accumulated, 0, 255, out=accumulated)
-        average_overlay[row:bottom] = accumulated.astype(np.uint8)
-
-    vlog.img(average_overlay, alt="All warped scans averaged in overlaps", style="max-height: 500px;")
-
-    vlog.end_timer()
-
-
-
-
-def _vlog_composition_result(
-        vlog: MdLogger | None,
-        conflicts: int,
-        restored: int,
-        covered_counts: Sequence[int],
-        selected_counts: Sequence[int],
-        output: ImageArray,
-        output_with_seams: ImageArray,
-        output_with_seam_areas: ImageArray,
-) -> None:
-    if not vlog:
-        return
-
-    vlog.p(
-        f"Conflicting seam claims resolved by image index: `{conflicts}`; seam holes restored: `{restored}` pixels."
-    )
-    vlog.table(
-        ("Image", "Covered pixels before seams", "Selected output pixels"),
-        tuple((index, covered, selected) for index, (covered, selected) in
-              enumerate(zip(covered_counts, selected_counts))),
-    )
-    vlog.h4("Hard-seam result")
-    vlog.p("Every covered output pixel is copied from one warped image; uncovered pixels remain black.")
-    vlog.img(output, alt="Stitched scans with hard seams", style="max-height: 500px;")
-    vlog.img(output_with_seams, link_only=True, alt="Stitching Seams", style="max-height: 500px;")
-    vlog.img(output_with_seam_areas, link_only=True, alt="Stitching Seam Areas", style="max-height: 500px;")
-    vlog.end_timer()
-    vlog.log_elapsed("Image Composition finished at")
-
-#endregion

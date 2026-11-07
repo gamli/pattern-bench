@@ -17,7 +17,6 @@ from scipy.optimize import least_squares
 from scipy.sparse import csr_array, eye_array, hstack, vstack
 
 from ._rigid_geometry import fit_rigid_transform
-from ._verbose_logging import _vlog_end_timer, _vlog_start_timer
 from .feature_matching import PairwiseMatch
 from .shared import FloatArray, ImageArray, StitchingConfig, StitchingImages
 
@@ -47,15 +46,7 @@ def validate_pixel_pairs(
         config: StitchingConfig,
 ) -> tuple[PairwiseMatch, ...]:
     """Reject edges lacking pixel evidence after a bounded local rigid fit."""
-    vlog = config.vlog
-    if vlog:
-        vlog.h4("Pixel validation of feature pairs")
-        vlog.p(
-            "Each feature-accepted pair is checked independently using local image contrast. "
-            "Uniform backgrounds of any colour contribute no matching evidence. Small rigid ECC corrections are allowed "
-            "before applying the correlation threshold; a failed ECC solve alone does not reject a pair."
-        )
-    _vlog_start_timer(vlog, "Pixel pair validation")
+
     verified, rows = [], []
     for pair in matches:
         if not pair.accepted:
@@ -84,10 +75,7 @@ def validate_pixel_pairs(
             f"{pair.image_idx_i} / {pair.image_idx_j}",
             _format_score(initial_score), _format_score(score), reason or "Accepted",
         ))
-    if vlog:
-        vlog.table(("Image pair", "Initial correlation", "Best local correlation", "Pixel validation"), rows)
-        vlog.p("Only pairs accepted by both feature matching and pixel validation enter the global fit.")
-    _vlog_end_timer(vlog)
+
     return tuple(verified)
 
 
@@ -381,79 +369,65 @@ def refine_global_pixels(
         config: StitchingConfig,
 ) -> tuple[FloatArray, ...]:
     """Jointly maximize pixel agreement, keeping unit scale, rigid poses and image 0."""
-    vlog = config.vlog
-    if vlog:
-        vlog.h4("Joint pixel refinement")
-        vlog.p(
-            "Refining all verified overlaps together with normalized local-contrast differences. "
-            "The pyramid ends at original resolution. Each pair has equal total weight; image 0, "
-            "unit scale and the rigid model stay fixed. A weak pose prior stabilizes directions without texture."
+
+    centres = np.array(
+        [(pyramid[0].shape[1] - 1, pyramid[0].shape[0] - 1) for pyramid in pyramids],
+        dtype=np.float64,
+    ) / 2
+    radii = np.maximum(np.linalg.norm(centres, axis=1), 1.0)
+    parameters = np.zeros(3 * (len(transforms) - 1), dtype=np.float64)
+    poses = tuple(transforms)
+    refined_full_resolution = False
+
+    for level in reversed(range(max(len(pyramid) for pyramid in pyramids))):
+        samples = _make_samples(matches, pyramids, poses, level, config)
+        if not samples:
+            continue
+        objective = _PixelObjective(transforms, samples, centres, radii, config.pixel_max_correction)
+        result = least_squares(
+            objective.residuals, parameters, jac=objective.jacobian, method="trf",
+            bounds=(-config.pixel_max_correction, config.pixel_max_correction),
+            x_scale="jac", max_nfev=config.pixel_refinement_iterations,
+            ftol=1e-6, xtol=1e-5, gtol=1e-7,
         )
-    _vlog_start_timer(vlog, "Joint pixel refinement")
-    try:
-        centres = np.array([(pyramid[0].shape[1] - 1, pyramid[0].shape[0] - 1) for pyramid in pyramids]) / 2
-        radii = np.maximum(np.linalg.norm(centres, axis=1), 1.0)
-        parameters = np.zeros(3 * (len(transforms) - 1), dtype=np.float64)
-        poses = tuple(transforms)
-        refined_full_resolution = False
-        for level in reversed(range(max(len(pyramid) for pyramid in pyramids))):
-            samples = _make_samples(matches, pyramids, poses, level, config)
-            if not samples:
-                if vlog:
-                    vlog.p(f"Pyramid scale `{0.5 ** level:g}`: no overlap with enough interior texture to refine.")
-                continue
-            objective = _PixelObjective(transforms, samples, centres, radii, config.pixel_max_correction)
-            result = least_squares(
-                objective.residuals, parameters, jac=objective.jacobian, method="trf",
-                bounds=(-config.pixel_max_correction, config.pixel_max_correction),
-                x_scale="jac", max_nfev=config.pixel_refinement_iterations,
-                ftol=1e-6, xtol=1e-5, gtol=1e-7,
-            )
-            if vlog:
-                vlog.p(
-                    f"Pyramid scale `{0.5 ** level:g}`: `{len(samples)}` overlaps, "
-                    f"`{sum(len(sample.reference) for sample in samples)}` samples, "
-                    f"`{result.nfev}` evaluations; {result.message}"
-                )
-            if np.isfinite(result.x).all() and np.isfinite(result.fun).all():
-                parameters = result.x
-                poses = objective.poses(parameters)
-                refined_full_resolution |= level == 0
-        movement = _maximum_pose_movement(transforms, poses, pyramids)
-        if movement > config.pixel_max_correction:
-            # Limit actual corner motion, including the combined rotation/translation.
-            lower, upper = 0.0, 1.0
-            for _ in range(24):
-                fraction = (lower + upper) / 2
-                # noinspection unbound-local-variable
-                candidate = objective.poses(parameters * fraction)
-                if _maximum_pose_movement(transforms, candidate, pyramids) <= config.pixel_max_correction:
-                    lower = fraction
-                else:
-                    upper = fraction
-            poses = objective.poses(parameters * lower)
-            movement = _maximum_pose_movement(transforms, poses, pyramids)
-        before_scores, after_scores, rows = [], [], []
-        for pair in matches:
-            if not pair.accepted:
-                continue
-            i, j = pair.image_idx_i, pair.image_idx_j
-            before = _pair_score(pyramids[i][0], pyramids[j][0], np.linalg.inv(transforms[j]) @ transforms[i])
-            after = _pair_score(pyramids[i][0], pyramids[j][0], np.linalg.inv(poses[j]) @ poses[i])
-            before_scores.append(before if before is not None else 0.0)
-            after_scores.append(after if after is not None else 0.0)
-            rows.append((f"{i} / {j}", _format_score(before), _format_score(after)))
-        improved = (refined_full_resolution and np.mean(after_scores) > np.mean(before_scores) + 1e-6
-                    and min(after_scores) >= config.pixel_min_correlation)
-        if vlog:
-            vlog.table(("Image pair", "Feature-fit correlation", "Final pixel correlation"), rows)
-            vlog.p(f"Maximum scan-corner correction: `{movement:.4f}` original pixels.")
-            if movement >= config.pixel_max_correction - 1e-3:
-                vlog.p("The correction reached the configured pixel_max_correction limit.")
-            vlog.p("Pixel refinement accepted." if improved else "Pixel refinement did not improve verified agreement; keeping the feature fit.")
-        return poses if improved else tuple(transforms)
-    finally:
-        _vlog_end_timer(vlog)
+        if np.isfinite(result.x).all() and np.isfinite(result.fun).all():
+            parameters = result.x
+            poses = objective.poses(parameters)
+            refined_full_resolution |= level == 0
+
+    movement = _maximum_pose_movement(transforms, poses, pyramids)
+
+    if movement > config.pixel_max_correction:
+        # Limit actual corner motion, including the combined rotation/translation.
+        lower, upper = 0.0, 1.0
+        for _ in range(24):
+            fraction = (lower + upper) / 2
+            # noinspection unbound-local-variable
+            candidate = objective.poses(parameters * fraction)
+            if _maximum_pose_movement(transforms, candidate, pyramids) <= config.pixel_max_correction:
+                lower = fraction
+            else:
+                upper = fraction
+        poses = objective.poses(parameters * lower)
+
+    before_scores, after_scores = [], []
+
+    for pair in matches:
+        if not pair.accepted:
+            continue
+        i, j = pair.image_idx_i, pair.image_idx_j
+        relative_before = np.asarray(np.linalg.inv(transforms[j]) @ transforms[i], dtype=np.float64)
+        relative_after = np.asarray(np.linalg.inv(poses[j]) @ poses[i], dtype=np.float64)
+        before = _pair_score(pyramids[i][0], pyramids[j][0], relative_before)
+        after = _pair_score(pyramids[i][0], pyramids[j][0], relative_after)
+        before_scores.append(before if before is not None else 0.0)
+        after_scores.append(after if after is not None else 0.0)
+
+    improved = (refined_full_resolution
+                and np.mean(after_scores) > np.mean(before_scores) + 1e-6
+                and min(after_scores) >= config.pixel_min_correlation)
+
+    return poses if improved else tuple(transforms)
 
 
 def _maximum_pose_movement(

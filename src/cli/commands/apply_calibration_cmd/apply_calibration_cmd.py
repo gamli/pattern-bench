@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Protocol
 
 from scanner.calibration import apply_scanner_calibration, ScannerCalibration
-
 from ..utils import save_output_image, load_scan_images
 
 

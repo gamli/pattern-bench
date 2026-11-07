@@ -9,7 +9,6 @@ from stitching.feature_detection import detect_features
 from stitching.feature_matching import match_features
 from stitching.shared import StitchingConfig
 from stitching.transformation_estimation import estimate_global_transforms
-from utils.md_logger import MdLogger
 from ..utils import save_output_image, load_scan_images, print_info, start_info_timer, print_peak_memory
 
 
@@ -86,10 +85,7 @@ def _run(args: StitchScansArgs) -> None:
     if args.verbose:
         verbose_dir.mkdir()
 
-    vlog = MdLogger(verbose_dir / "log.md") if args.verbose else None
-
     config = StitchingConfig(
-        vlog=vlog,
         use_fixed_seed=args.use_fixed_seed,
         pixel_refinement=not args.no_pixel_refinement,
     )
@@ -100,7 +96,7 @@ def _run(args: StitchScansArgs) -> None:
     print_peak_memory("Initial")
 
     print_info("1. Calibration")
-    corrected_stitching_images = apply_scanner_calibration(stitching_images, scanner_calibration, config.vlog)
+    corrected_stitching_images = apply_scanner_calibration(stitching_images, scanner_calibration)
     print_peak_memory("After Calibration")
     info_timer.print("\tDone")
 
@@ -120,7 +116,7 @@ def _run(args: StitchScansArgs) -> None:
     info_timer.print("\tDone")
 
     print_info("5. Compose")
-    composed = compose_images(image_transforms, corrected_stitching_images, config)
+    composed = compose_images(image_transforms, corrected_stitching_images)
     print_peak_memory("After Compose")
     info_timer.print("\tDone")
 

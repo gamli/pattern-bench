@@ -17,7 +17,6 @@ from stitching.pixel_registration import (
 )
 from stitching.shared import StitchingConfig, StitchingImages
 from stitching.transformation_estimation import estimate_global_transforms
-from utils.md_logger import MdLogger
 
 
 def _pattern(width: int = 640, height: int = 480) -> np.ndarray:
@@ -164,19 +163,6 @@ class PixelRegistrationTests(unittest.TestCase):
             delta[column] = 1e-5
             finite[:, column] = (objective.residuals(parameters + delta) - objective.residuals(parameters - delta)) / 2e-5
         np.testing.assert_allclose(analytic, finite, atol=1e-7, rtol=1e-4)
-
-    def test_verbose_log_reports_validation_and_final_comparison(self) -> None:
-        with TemporaryDirectory() as directory:
-            logger = MdLogger(Path(directory) / "log.md")
-            pair = _pair(0, 1, self.points, self.points + (2., -1.))
-            config = StitchingConfig(vlog=logger, irls_iterations=0, pixel_max_samples=3000)
-            estimate_global_transforms((pair,), _images(self.image, self.image.copy()), config)
-            text = logger.path.read_text(encoding="utf-8")
-            self.assertIn("Best local correlation", text)
-            self.assertIn("Final pixel correlation", text)
-            self.assertIn("Pixel refinement accepted.", text)
-            self.assertIn("Pixel refinement: global rigid overlay", text)
-            self.assertEqual(logger._timer_state.stack, [])
 
 
 if __name__ == "__main__":

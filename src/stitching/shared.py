@@ -8,7 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from scanner.constants import SCANNER_DPI
-from utils.md_logger import MdLogger
 
 ImageArray = NDArray[np.uint8]
 FloatArray = NDArray[np.float64]
@@ -53,7 +52,7 @@ class StitchingConfig:
     huber_delta is measured in the reference image's original pixel units.
     pixel_refinement enables pixel pair validation and joint intensity fitting.
     pixel_min_correlation measures agreement of local image contrast; uniform
-    regions of any colour provide no matching evidence. pixel_max_correction
+    regions of any color provide no matching evidence. pixel_max_correction
     bounds actual scan-corner movement in original pixels, including rotation.
     pixel_max_samples caps samples per overlap and pyramid level; the final
     level uses original-resolution pixels.
@@ -69,7 +68,6 @@ class StitchingConfig:
     huber_delta: float = 1.0
     irls_iterations: int = 5
 
-    vlog: MdLogger | None = None
     use_fixed_seed: bool = False
     max_threads: int = 1
     use_gpu: bool = False
