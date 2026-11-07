@@ -44,6 +44,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Reset the RNG to a fixed seed before each random operation.",
     )
+    parser.add_argument(
+        "--no-pixel-refinement",
+        action="store_true",
+        help="Disable pixel validation of image pairs and final pixel refinement.",
+    )
 
     parser.set_defaults(handler=_run)
 
@@ -53,6 +58,7 @@ class StitchScansArgs(Protocol):
     output_dir: Path
     verbose: bool
     use_fixed_seed: bool
+    no_pixel_refinement: bool
 
 
 def _run(args: StitchScansArgs) -> None:
@@ -79,6 +85,7 @@ def _run(args: StitchScansArgs) -> None:
     config = StitchingConfig(
         vlog=vlog,
         use_fixed_seed=args.use_fixed_seed,
+        pixel_refinement=not args.no_pixel_refinement,
     )
 
     scanner_calibration = ScannerCalibration()

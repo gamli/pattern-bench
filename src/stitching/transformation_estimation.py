@@ -6,8 +6,10 @@ from scipy.optimize import OptimizeResult, least_squares
 
 from utils.md_logger import MdLogger
 
+from ._rigid_geometry import fit_rigid_transform
 from ._verbose_logging import _vlog_end_timer, _vlog_error, _vlog_start_timer
 from .feature_matching import PairwiseMatch
+from .pixel_registration import prepare_pixel_images, refine_global_pixels, validate_pixel_pairs
 from .shared import StitchingConfig, StitchingImages, FloatArray
 
 
@@ -16,7 +18,7 @@ def estimate_global_transforms(
         stitching_images: StitchingImages,
         config: StitchingConfig,
 ) -> tuple[FloatArray, ...]:
-    """Solve all accepted point correspondences jointly, fixing image 0 to identity.
+    """Validate pairs, fit features jointly, then refine pixels with image 0 fixed.
 
     For each correspondence p_i <-> p_j, require G_i(p_i) = G_j(p_j).
     Each unknown rigid transform has one angle and two translations; scale
@@ -26,6 +28,9 @@ def estimate_global_transforms(
     using an analytic Jacobian and Jacobian-based parameter scaling.
     Initial ordinary least squares is followed by the configured number of
     IRLS solves using radial Huber weights shared by both point coordinates.
+    When enabled, independent pixel checks remove false feature pairs before
+    that fit. A final joint intensity fit refines all remaining overlaps,
+    keeping the same rigid model and ending at original image resolution.
     """
 
     vlog = config.vlog
@@ -44,10 +49,6 @@ def estimate_global_transforms(
         _vlog_single_image_estimation(vlog)
         return (np.eye(3, dtype=np.float64),)
 
-    _vlog_start_timer(vlog, "coefficient/target initialization")
-
-    coefficient_blocks = []
-    target_blocks = []
     for pair in pairwise_matches:
         if not pair.accepted:
             continue
@@ -58,6 +59,29 @@ def estimate_global_transforms(
         if not np.isfinite(p).all() or not np.isfinite(q).all():
             _vlog_invalid_pair(vlog, pair, "matched coordinates must be finite")
             raise ValueError("Matched coordinates must be finite.")
+
+    pixel_pyramids = None
+    if config.pixel_refinement:
+        _vlog_start_timer(vlog, "Preparing pixel contrast pyramids")
+        pixel_pyramids = prepare_pixel_images(stitching_images)
+        _vlog_end_timer(vlog)
+        pairwise_matches = validate_pixel_pairs(pairwise_matches, pixel_pyramids, config)
+        try:
+            _check_connectivity(pairwise_matches, stitching_images.count)
+        except RuntimeError as error:
+            message = f"Pixel validation removed unreliable pairs. {error}"
+            _vlog_error(vlog, message)
+            _vlog_estimation_finish(vlog)
+            raise RuntimeError(message) from error
+
+    _vlog_start_timer(vlog, "coefficient/target initialization")
+
+    coefficient_blocks = []
+    target_blocks = []
+    for pair in pairwise_matches:
+        if not pair.accepted:
+            continue
+        p, q = pair.keypoints_i, pair.keypoints_j
         coefficients = np.zeros((len(p), 3 * (stitching_images.count - 1)), dtype=np.float64)
         targets = np.zeros((len(p), 2), dtype=np.float64)
         i, j = pair.image_idx_i, pair.image_idx_j
@@ -125,6 +149,13 @@ def estimate_global_transforms(
             raise RuntimeError(message)
         transforms.append(transform)
 
+    if pixel_pyramids is not None:
+        transforms = list(refine_global_pixels(transforms, pairwise_matches, pixel_pyramids, config))
+        try:
+            _vlog_alignment(vlog, "Pixel refinement", stitching_images, transforms, pairwise_matches)
+        except (cv.error, MemoryError) as error:
+            _vlog_error(vlog, f"Could not render the pixel-refined alignment: {error}")
+
     _vlog_estimation_result(vlog, transforms)
 
     return tuple(transforms)
@@ -159,16 +190,8 @@ def _initial_rigid_solution(matches: Sequence[PairwiseMatch], image_count: int) 
     for pair in matches:
         if not pair.accepted:
             continue
-        p, q = pair.keypoints_i, pair.keypoints_j
-        p_mean, q_mean = p.mean(axis=0), q.mean(axis=0)
-        u, _, vt = np.linalg.svd((q - q_mean).T @ (p - p_mean))
-        rotation = vt.T @ u.T
-        if np.linalg.det(rotation) < 0:
-            vt[-1] *= -1
-            rotation = vt.T @ u.T
-        relative = np.eye(3, dtype=np.float64)
-        relative[:2, :2] = rotation
-        relative[:2, 2] = p_mean - rotation @ q_mean
+        relative = fit_rigid_transform(pair.keypoints_j, pair.keypoints_i)
+        rotation = relative[:2, :2]
         inverse = np.eye(3, dtype=np.float64)
         inverse[:2, :2] = rotation.T
         inverse[:2, 2] = -rotation.T @ relative[:2, 2]
@@ -258,6 +281,11 @@ def _vlog_estimation_start(vlog: MdLogger | None, image_count: int, config: Stit
         (
             ("irls_iterations", config.irls_iterations),
             ("huber_delta (px)", config.huber_delta),
+            ("pixel_refinement", config.pixel_refinement),
+            ("pixel_min_correlation", config.pixel_min_correlation),
+            ("pixel_max_correction (px)", config.pixel_max_correction),
+            ("pixel_refinement_iterations", config.pixel_refinement_iterations),
+            ("pixel_max_samples (per pair)", config.pixel_max_samples),
             ("solver", "SciPy least_squares / Levenberg-Marquardt"),
             ("initialization", "Pairwise Kabsch / spanning tree"),
         ),
@@ -314,6 +342,9 @@ def _vlog_estimation_result(vlog: MdLogger | None, transforms: Sequence[FloatArr
 
     vlog.h4("Global transformation estimation result")
     vlog.p(f"Returning `{len(transforms)}` global transforms mapping each image to reference image `0`.")
+    for index, transform in enumerate(transforms):
+        vlog.p(f"Final transform for image `{index}`:")
+        vlog.code(np.array2string(transform, precision=8))
     _vlog_estimation_finish(vlog)
 
 

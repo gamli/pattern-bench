@@ -1,5 +1,6 @@
 ﻿from dataclasses import dataclass
 from functools import cached_property
+from math import isfinite
 from pathlib import Path
 
 import cv2 as cv
@@ -50,6 +51,12 @@ class StitchingConfig:
     Thus, 0.65 corresponds to a descriptor distance ratio below 0.35.
     The native affine matcher's RANSAC threshold is its default: 3 pixels.
     huber_delta is measured in the reference image's original pixel units.
+    pixel_refinement enables pixel pair validation and joint intensity fitting.
+    pixel_min_correlation measures agreement of local image contrast; uniform
+    regions of any colour provide no matching evidence. pixel_max_correction
+    bounds actual scan-corner movement in original pixels, including rotation.
+    pixel_max_samples caps samples per overlap and pyramid level; the final
+    level uses original-resolution pixels.
     """
 
     match_conf: float = 0.65
@@ -67,6 +74,12 @@ class StitchingConfig:
     max_threads: int = 1
     use_gpu: bool = False
 
+    pixel_refinement: bool = True
+    pixel_min_correlation: float = 0.5
+    pixel_max_correction: float = 20.0
+    pixel_refinement_iterations: int = 50
+    pixel_max_samples: int = 20_000
+
     def __post_init__(self) -> None:
         if not 0.0 <= self.match_conf < 1.0:
             raise ValueError("match_conf must be in [0, 1).")
@@ -78,6 +91,12 @@ class StitchingConfig:
             raise ValueError("Invalid confidence threshold or Huber delta.")
         if self.irls_iterations < 0:
             raise ValueError("irls_iterations must be >= 0.")
+        if not 0.0 < self.pixel_min_correlation <= 1.0:
+            raise ValueError("pixel_min_correlation must be in (0, 1].")
+        if not isfinite(self.pixel_max_correction) or self.pixel_max_correction <= 0:
+            raise ValueError("pixel_max_correction must be finite and positive.")
+        if self.pixel_refinement_iterations < 1 or self.pixel_max_samples < 128:
+            raise ValueError("Pixel refinement needs at least one iteration and 128 samples per pair.")
 
     def configure_opencv(self) -> None:
         cv.setNumThreads(self.max_threads)
