@@ -1,7 +1,7 @@
 """Validate feature pairs and jointly refine rigid poses using scan intensities.
 
 Local contrast suppresses uniform backgrounds and slow illumination changes;
-no background colour or white threshold is assumed. Normalized contrast
+no background color or white threshold is assumed. Normalized contrast
 differences require sufficient texture to validate a pair. Pairwise ECC at
 coarse-to-fine resolutions checks each edge independently, before an incorrect
 edge can bias the global fit. The final direct fit optimizes all remaining
@@ -9,7 +9,7 @@ overlaps together, ending at original resolution with image 0 fixed.
 """
 
 from dataclasses import dataclass, replace
-from typing import Sequence
+from typing import Sequence, cast
 
 import cv2 as cv
 import numpy as np
@@ -110,16 +110,27 @@ def _warp_view(
 ) -> tuple[ImageArray, ImageArray]:
     sampling = transform[:2].copy()
     sampling[:, 2] += sampling[:, :2] @ origin
-    warped = cv.warpAffine(
-        moving, sampling, shape[::-1], flags=cv.INTER_LINEAR | cv.WARP_INVERSE_MAP,
+    warped = cast(
+        ImageArray,
+        cv.warpAffine(moving, sampling, shape[::-1], flags=cv.INTER_LINEAR | cv.WARP_INVERSE_MAP),
     )
-    mask = cv.warpAffine(
-        np.full(moving.shape, 255, dtype=np.uint8), sampling, shape[::-1],
-        flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
+    mask = cast(
+        ImageArray,
+        cv.warpAffine(
+            np.full(moving.shape, 255, dtype=np.uint8),
+            sampling,
+            shape[::-1],
+            flags=cv.INTER_NEAREST | cv.WARP_INVERSE_MAP,
+        ),
     )
-    mask = cv.erode(
-        mask, np.ones((2 * margin + 1, 2 * margin + 1), dtype=np.uint8),
-        borderType=cv.BORDER_CONSTANT, borderValue=0,
+    mask = cast(
+        ImageArray,
+        cv.erode(
+            mask,
+            np.ones((2 * margin + 1, 2 * margin + 1), dtype=np.uint8),
+            borderType=cv.BORDER_CONSTANT,
+            borderValue=0,
+        ),
     )
     return warped, mask
 
@@ -155,56 +166,85 @@ def _refine_pair(
         config: StitchingConfig,
 ) -> FloatArray:
     current = initial.copy()
+
     initial_view = _overlap_view(pyramid_i[0], pyramid_j[0], initial)
     if initial_view is None:
         return current
+
     shape, origin = initial_view[0].shape, initial_view[3]
     anchors = np.array(((0, 0), (shape[1] - 1, 0), (0, shape[0] - 1), (shape[1] - 1, shape[0] - 1))) + origin
+
     for level in reversed(range(min(len(pyramid_i), len(pyramid_j)))):
+
         scale = 0.5 ** level
         scaled = current.copy()
         scaled[:2, 2] *= scale
+
         view = _overlap_view(
-            pyramid_i[level], pyramid_j[level], scaled,
+            pyramid_i[level],
+            pyramid_j[level],
+            scaled,
             margin=3 + int(np.ceil(config.pixel_max_correction * scale)),
         )
+
         if view is None or cv.countNonZero(view[2]) < 128:
             continue
+
         template, moving, mask, origin = view
         before = _correlation(template, moving, mask)
+
         if before is None:
             continue
+
         try:
             _, correction = cv.findTransformECC(
-                template, moving, np.eye(2, 3, dtype=np.float32), cv.MOTION_EUCLIDEAN,
+                template,
+                moving,
+                np.eye(2, 3, dtype=np.float32),
+                cv.MOTION_EUCLIDEAN,
                 (cv.TERM_CRITERIA_COUNT | cv.TERM_CRITERIA_EPS, config.pixel_refinement_iterations, 1e-5),
-                mask, 5,
+                mask,
+                5,
             )
-        except cv.error:
+        except cv.error:  # todo does this try/except make sense?
             continue
+
         if not np.isfinite(correction).all():
             continue
-        # Prewarping keeps ECC near identity, including for scans rotated 90 degrees.
+
+        # pre-warping keeps ECC near identity, including for scans rotated 90 degrees.
+
         angle = np.arctan2(correction[1, 0], correction[0, 0])
         cosine, sine = np.cos(angle), np.sin(angle)
+
         delta = np.eye(3, dtype=np.float64)
         delta[:2, :2] = ((cosine, -sine), (sine, cosine))
         delta[:2, 2] = correction[:, 2]
+
         offset = np.eye(3, dtype=np.float64)
         offset[:2, 2] = origin
+
         candidate = scaled @ offset @ delta @ np.linalg.inv(offset)
         candidate[:2, 2] /= scale
+
         displacement = anchors @ (candidate[:2, :2] - initial[:2, :2]).T + candidate[:2, 2] - initial[:2, 2]
+
         if np.max(np.linalg.norm(displacement, axis=1)) > config.pixel_max_correction:
             continue
+
         candidate_scaled = candidate.copy()
         candidate_scaled[:2, 2] *= scale
+
         warped, candidate_mask = _warp_view(pyramid_j[level], candidate_scaled, template.shape, origin)
-        common_mask = cv.bitwise_and(mask, candidate_mask)
+
+        common_mask = cast(ImageArray, cv.bitwise_and(mask, candidate_mask))
+
         old_score = _correlation(template, moving, common_mask)
         new_score = _correlation(template, warped, common_mask)
+
         if old_score is not None and new_score is not None and new_score > old_score:
             current = candidate
+
     return current
 
 
@@ -227,36 +267,61 @@ def _make_samples(
 ) -> tuple[_PixelSamples, ...]:
     samples = []
     scale = 0.5 ** level
+
     for pair in matches:
+
         if not pair.accepted:
             continue
+
         i, j = pair.image_idx_i, pair.image_idx_j
+
         if level >= min(len(pyramids[i]), len(pyramids[j])):
             continue
-        relative = np.linalg.inv(poses[j]) @ poses[i]
+
+        pose_j = poses[j]
+        pose_j_inv = np.linalg.inv(pose_j)
+        pose_i = poses[i]
+        relative = pose_j_inv @ pose_i
         relative[:2, 2] *= scale
+
         margin = 3 + int(np.ceil(2 * config.pixel_max_correction * scale))
+
         view = _overlap_view(pyramids[i][level], pyramids[j][level], relative, margin)
+
         if view is None:
             continue
+
         reference, moving, mask, origin = view
+
         # Include contrast from either scan and nearby areas, so unmatched lines count too.
-        ink = ((reference > 2) | (moving > 2)).astype(np.uint8)
+
         radius = max(3, int(np.ceil(config.pixel_max_correction * scale)))
+
+        ink = ((reference > 2) | (moving > 2)).astype(np.uint8)
         ink = cv.dilate(ink, np.ones((2 * radius + 1, 2 * radius + 1), dtype=np.uint8))
+
         indices = np.flatnonzero((ink != 0) & (mask != 0))
+
         if len(indices) < 128:
             continue
+
         if len(indices) > config.pixel_max_samples:
             rng = np.random.default_rng(0x5A17 + 1009 * i + 9176 * j + level)
             indices = rng.choice(indices, config.pixel_max_samples, replace=False)
+
         y, x = np.unravel_index(indices, reference.shape)
+
         values = reference[y, x].astype(np.float64)
+
         norm = np.linalg.norm(values)
+
         if norm < 1e-6:
             continue
+
         points = (np.column_stack((x, y)) + origin) / scale
+
         samples.append(_PixelSamples(i, j, points, values / norm, pyramids[j][level], scale))
+
     return tuple(samples)
 
 
@@ -410,16 +475,22 @@ def refine_global_pixels(
                 upper = fraction
         poses = objective.poses(parameters * lower)
 
-    before_scores, after_scores = [], []
+    before_scores: list[float] = []
+    after_scores: list[float] = []
 
     for pair in matches:
+
         if not pair.accepted:
             continue
+
         i, j = pair.image_idx_i, pair.image_idx_j
+
         relative_before = np.asarray(np.linalg.inv(transforms[j]) @ transforms[i], dtype=np.float64)
         relative_after = np.asarray(np.linalg.inv(poses[j]) @ poses[i], dtype=np.float64)
+
         before = _pair_score(pyramids[i][0], pyramids[j][0], relative_before)
         after = _pair_score(pyramids[i][0], pyramids[j][0], relative_after)
+
         before_scores.append(before if before is not None else 0.0)
         after_scores.append(after if after is not None else 0.0)
 

@@ -5,15 +5,19 @@ Run with PYTHONPATH=src python -m unittest discover -s tests -v.
 
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import cv2 as cv
 import numpy as np
 
 from stitching.feature_matching import PairwiseMatch
+# noinspection protected-member
 from stitching.pixel_registration import (
-    _make_samples, _maximum_pose_movement, _PixelObjective,
-    prepare_pixel_images, refine_global_pixels, validate_pixel_pairs,
+    _make_samples,
+    _maximum_pose_movement,
+    _PixelObjective,
+    prepare_pixel_images,
+    refine_global_pixels,
+    validate_pixel_pairs,
 )
 from stitching.shared import StitchingConfig, StitchingImages
 from stitching.transformation_estimation import estimate_global_transforms

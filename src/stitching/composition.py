@@ -6,7 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from cli.commands.utils import print_info, start_info_timer
-from .shared import ImageArray, FloatArray, StitchingImages, StitchingConfig
+from .shared import ImageArray, FloatArray, StitchingImages
 
 
 @dataclass(frozen=True)

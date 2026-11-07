@@ -13,10 +13,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ipykernel==7.*",
-    "ipympl==0.*",
-    "matplotlib==3.*",
-    "opencv-jupyter-ui==1.*",
     "scipy-stubs==1.*",
     "types-psutil==7.*",
 ]
