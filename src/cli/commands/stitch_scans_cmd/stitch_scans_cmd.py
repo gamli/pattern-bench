@@ -22,15 +22,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "scan_files",
         metavar="SCAN_FILES",
-        nargs="+",
-        help="The scan files or file patterns to stitch.",
+        nargs="*",
+        help="The scan files or file patterns to stitch. Opens a file dialog if omitted.",
     )
     parser.add_argument(
-        "-o", "--output-dir",
-        metavar="OUTPUT_DIR",
+        "-o", "--output-file",
+        metavar="OUTPUT_FILE",
         type=Path,
-        default=Path(),
-        help="Path to save the output (stitched scan image and verbose) to.",
+        default=None,
+        help="Path to save the stitched scan image to. Opens a save dialog if omitted.",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -52,34 +52,40 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 class StitchScansArgs(Protocol):
-    scan_files: list[str]
-    output_dir: Path
+    scan_files: list[str] | None
+    output_file: Path | None
     verbose: bool
     use_fixed_seed: bool
     no_pixel_refinement: bool
 
 
 def _run(args: StitchScansArgs) -> None:
+    scan_files_and_output_file = _scan_files_and_output_file(args)
+    if scan_files_and_output_file is None:
+        print_info("Cancelled.")
+        return
+    scan_files, output_file = scan_files_and_output_file
+
     print_info("Running stitch-scans")
 
     info_timer = start_info_timer()
 
     print_info("Loading images")
-    stitching_images = load_scan_images(args.scan_files)
+    stitching_images = load_scan_images(scan_files)
     info_timer.print("\tDone")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = output_file.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_image_file = args.output_dir / "stitched_scans.jpg"
-    output_image_file.unlink(missing_ok=True)
+    output_file.unlink(missing_ok=True)
 
-    output_image_with_seams_file = args.output_dir / "stitched_scans_with_seams.jpg"
+    output_image_with_seams_file = output_file.with_stem(f"{output_file.stem}_with_seams")
     output_image_with_seams_file.unlink(missing_ok=True)
 
-    output_image_with_seam_areas_file = args.output_dir / "stitched_scans_with_seam_areas.jpg"
+    output_image_with_seam_areas_file = output_file.with_stem(f"{output_file.stem}_with_seam_areas")
     output_image_with_seam_areas_file.unlink(missing_ok=True)
 
-    verbose_dir = args.output_dir / "verbose"
+    verbose_dir = output_dir / "verbose"
     if verbose_dir.exists():
         shutil.rmtree(verbose_dir)
     if args.verbose:
@@ -120,6 +126,60 @@ def _run(args: StitchScansArgs) -> None:
     print_peak_memory("After Compose")
     info_timer.print("\tDone")
 
-    save_output_image(composed.image, composed.dpi, output_image_file)
+    save_output_image(composed.image, composed.dpi, output_file)
     save_output_image(composed.image_with_seams, composed.dpi, output_image_with_seams_file)
     save_output_image(composed.image_with_seam_areas, composed.dpi, output_image_with_seam_areas_file)
+
+def _scan_files_and_output_file(args: StitchScansArgs) -> tuple[list[str], Path] | None:
+
+    scan_files = args.scan_files
+    output_file = args.output_file
+
+    scan_files = [file for file in (scan_files or []) if file.strip()]
+    if scan_files and output_file is not None:
+        return scan_files, output_file
+
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        if not scan_files:
+            scan_files = list(filedialog.askopenfilenames(
+                parent=root,
+                title="Select scans to stitch",
+                filetypes=scan_filetypes,
+            ))
+            if not scan_files:
+                return None
+
+        if output_file is None:
+            selected_file = filedialog.asksaveasfilename(
+                parent=root,
+                title="Save stitched scan",
+                initialfile="stitched_scans.jpg",
+                defaultextension=".jpg",
+                filetypes=output_filetypes,
+            )
+            if not selected_file:
+                return None
+            output_file = Path(selected_file)
+
+        return scan_files, output_file
+    finally:
+        root.destroy()
+
+
+scan_filetypes: list[tuple[str, str]] = [
+    ("Image files", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp"),
+    ("All files", "*"),
+]
+
+output_filetypes: list[tuple[str, str]] = [
+    ("JPEG image", "*.jpg *.jpeg"),
+    ("PNG image", "*.png"),
+    ("TIFF image", "*.tif *.tiff"),
+    ("BMP image", "*.bmp"),
+    ("All files", "*"),
+]
