@@ -1,0 +1,117 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without v (for example, 0.1.0)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/windows-release.yml
+      - package-distribution.ps1
+      - pyproject.toml
+      - uv.lock
+      - src/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check Windows x64 EXE
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate release version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:RELEASE_VERSION -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw 'Enter a version such as 0.1.0, without a leading v.'
+          }
+          git ls-remote --exit-code --tags origin "refs/tags/v$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -eq 0) {
+            throw "Tag v$env:RELEASE_VERSION already exists. Choose a new version."
+          }
+          if ($LASTEXITCODE -ne 2) {
+            throw 'Could not check existing release tags.'
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Set up Python 3.14 x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+          architecture: x64
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Build single-file executable
+        run: ./package-distribution.ps1
+
+      - name: Check packaged executable and calibration resource
+        run: |
+          $exe = (Resolve-Path dist/pattern-bench.exe).Path
+          $env:PATTERN_BENCH_SMOKE_DIR = Join-Path $env:RUNNER_TEMP 'pattern-bench-smoke'
+          New-Item -ItemType Directory -Path $env:PATTERN_BENCH_SMOKE_DIR -Force | Out-Null
+          uv run --locked --group packaging python -c "import os; from PIL import Image; Image.new('RGB', (64, 64), 'white').save(os.path.join(os.environ['PATTERN_BENCH_SMOKE_DIR'], 'scan.jpg'), dpi=(300, 300))"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the smoke-test image.' }
+
+          # Run outside the checkout with fresh user configuration.
+          $env:APPDATA = Join-Path $env:PATTERN_BENCH_SMOKE_DIR 'config'
+          Push-Location $env:PATTERN_BENCH_SMOKE_DIR
+          try {
+            & $exe --help
+            if ($LASTEXITCODE -ne 0) { throw 'The executable failed to start.' }
+            & $exe stitch-scans --help
+            if ($LASTEXITCODE -ne 0) { throw 'The stitch-scans command failed to load.' }
+            & $exe apply-calibration scan.jpg --output-dir output
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged calibration failed.' }
+            if (-not (Test-Path output/corrected_scan.jpg)) {
+              throw 'The calibration output is missing.'
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+      - name: Upload executable as workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pattern-bench-windows-x64
+          path: dist/pattern-bench.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v$env:RELEASE_VERSION" dist/pattern-bench.exe `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --target "$env:GITHUB_SHA" `
+            --title "PatternBench $env:RELEASE_VERSION" `
+            --generate-notes
