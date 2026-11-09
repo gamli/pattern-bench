@@ -1,10 +1,12 @@
 ﻿import argparse
+import sys
 
 from .commands import register_commands
 
 
 def main() -> None:
-    args = _build_argument_parser().parse_args()
+    argv = sys.argv[1:] or ["stitch-scans"]
+    args = _build_argument_parser().parse_args(argv)
     args.handler(args)
 
 
